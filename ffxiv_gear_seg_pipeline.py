@@ -222,8 +222,7 @@ def save_clothing_with_white_bg(
     """
     保存衣服到文件，使用白色背景。
     """
-    mask_area = np.sum(mask)
-    if mask_area == 0:
+    if np.sum(mask) == 0:
         print(f"[ERROR] 保存时 mask 为空！无法保存到 {output_path}")
         return
     
@@ -235,13 +234,6 @@ def save_clothing_with_white_bg(
     inv_mask = cv2.bitwise_not(mask_uint8)
     background = cv2.bitwise_and(white_bg, white_bg, mask=inv_mask)
     bgr_out = cv2.add(foreground, background)
-    
-    # 检查输出图像是否全是白色
-    non_white_pixels = np.sum(np.any(bgr_out < 250, axis=2))
-    if non_white_pixels == 0:
-        print(f"[WARN] 输出图像全是白色，可能 mask 有问题！mask 面积: {mask_area}")
-    else:
-        print(f"[DEBUG] 保存成功，非白色像素: {non_white_pixels}, mask 面积: {mask_area}")
     
     cv2.imwrite(output_path, bgr_out)
 
@@ -394,8 +386,7 @@ def process_single_image(
         device=device,
     )
     
-    # 为了调试，先快速检测一下衣服区域，看看哪些被识别为衣服
-    print("[DEBUG] 快速检测衣服区域用于可视化...")
+    # 检测衣服区域（用于步骤2可视化和步骤3处理）
     image_pil = Image.fromarray(image_rgb)
     text = ". ".join(CLOTHING_PARTS) + "."
     inputs = processor(images=image_pil, text=text, return_tensors="pt").to(device)
@@ -431,11 +422,8 @@ def process_single_image(
         for box in clothing_boxes_debug:
             masks, _, _ = sam2_predictor.predict(box=box, multimask_output=False)
             clothing_mask_debug = clothing_mask_debug | (masks[0] > 0)
-        # 确保衣服 mask 只在前景内（不在这里去除皮肤，保持步骤2的可视化正确）
+        # 确保衣服 mask 只在前景内
         clothing_mask_debug = clothing_mask_debug & foreground_mask
-        print(f"[DEBUG] 检测到衣服区域面积: {np.sum(clothing_mask_debug)} 像素")
-    else:
-        print("[DEBUG] 未检测到衣服区域")
     
     # 保存步骤2的结果，同时显示皮肤、衣服和剩余区域
     step2_path = os.path.join(debug_dir, f"{base_name}_step2_no_skin.png")
@@ -450,59 +438,27 @@ def process_single_image(
         title="Step 2: Red=Skin, Yellow=Clothing, Green=Remaining",
     )
     print(f"[DEBUG] 已保存步骤2结果到: {step2_path}")
-    print(f"[DEBUG] 皮肤面积: {np.sum(skin_mask)}, 衣服面积: {np.sum(clothing_mask_debug)}, 剩余面积: {np.sum(clothing_base_mask)}")
     
-    # 额外保存一个只显示剩余区域的版本（更清晰）
-    step2_clean_path = os.path.join(debug_dir, f"{base_name}_step2_clean.png")
-    save_mask_visualization(
-        image_bgr=image_bgr,
-        mask=clothing_base_mask,
-        output_path=step2_clean_path,
-        color=(0, 255, 0),  # 绿色（只显示剩余区域）
-        title="Step 2: Clothing Only (No Skin, No Background)",
-    )
-    print(f"[DEBUG] 已保存步骤2干净版本到: {step2_clean_path}")
-    
-    # 步骤3: 直接使用步骤2中检测到的衣服区域（黄色轮廓内的区域）
-    print("[STEP 3] 使用步骤2中检测到的衣服区域...")
+    # 步骤3: 使用黄线（检测到的衣服区域）作为基础，用绿线补充褶皱
+    print("[STEP 3] 合并衣服区域和褶皱...")
     
     if np.sum(clothing_mask_debug) > 0:
-        clothing_area = np.sum(clothing_mask_debug)
-        base_area = np.sum(clothing_base_mask)
+        # 策略：使用黄线作为基础，然后用绿线补充褶皱
+        # 1. 对黄线进行膨胀，以包含褶皱区域
+        kernel_expand = np.ones((10, 10), np.uint8)
+        expanded_yellow = cv2.dilate(clothing_mask_debug.astype(np.uint8), kernel_expand, iterations=1).astype(bool)
         
-        print(f"[STEP 3] 检测到的衣服区域面积: {clothing_area} 像素")
-        print(f"[STEP 3] 基础 mask 面积（已去除皮肤）: {base_area} 像素")
-        
-        # 关键策略：使用基础 mask（已去除皮肤）与检测到的衣服区域的交集
-        # 这样既能得到检测到的衣服区域，又能确保不包含皮肤
-        final_clothing_mask = clothing_base_mask & clothing_mask_debug
-        
-        intersection_area = np.sum(final_clothing_mask)
-        print(f"[STEP 3] 交集面积: {intersection_area} 像素")
-        
-        # 如果交集太小（小于检测到的衣服区域的20%），说明可能有问题
-        if intersection_area < clothing_area * 0.2:
-            print(f"[STEP 3] 警告：交集面积太小，可能检测有问题")
-            # 尝试直接使用检测到的衣服区域，但确保在前景内
-            final_clothing_mask = clothing_mask_debug & foreground_mask
-            print(f"[STEP 3] 使用检测到的衣服区域（仅在前景内），面积: {np.sum(final_clothing_mask)} 像素")
-        
-        # 形态学操作：填充小洞，平滑边缘
-        kernel = np.ones((5, 5), np.uint8)
-        final_clothing_mask = cv2.morphologyEx(final_clothing_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
-        final_clothing_mask = cv2.morphologyEx(final_clothing_mask, cv2.MORPH_OPEN, kernel)
-        final_clothing_mask = final_clothing_mask.astype(bool)
-        
-        print(f"[STEP 3] 最终面积（形态学处理后）: {np.sum(final_clothing_mask)} 像素")
+        # 2. 在膨胀后的黄线范围内，使用绿线来补充褶皱
+        final_clothing_mask = (clothing_base_mask & expanded_yellow) | clothing_mask_debug
     else:
-        print("[WARN] 步骤2未检测到衣服区域，使用步骤2的剩余区域作为基础。")
-        # 如果步骤2没有检测到衣服，使用步骤2的剩余区域
+        # 如果未检测到衣服，使用基础 mask
         final_clothing_mask = clothing_base_mask
-        print(f"[DEBUG] 使用步骤2的剩余区域，面积: {np.sum(final_clothing_mask)} 像素")
     
-    # 检查最终 mask 是否为空
-    final_mask_area = np.sum(final_clothing_mask)
-    print(f"[DEBUG] 步骤3最终 mask 面积: {final_mask_area} 像素")
+    # 形态学操作：填充小洞（使用较小的 kernel 以保留褶皱）
+    kernel = np.ones((3, 3), np.uint8)
+    final_clothing_mask = cv2.morphologyEx(final_clothing_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
+    
+    print(f"[STEP 3] 最终面积: {np.sum(final_clothing_mask)} 像素")
     
     # 保存步骤3的结果，显示基础 mask、步骤2检测到的衣服区域和最终结果
     step3_path = os.path.join(debug_dir, f"{base_name}_step3_clothing.png")
@@ -517,20 +473,18 @@ def process_single_image(
         title="Step 3: Green=Base, Yellow=Detected, Cyan=Final",
     )
     print(f"[DEBUG] 已保存步骤3结果到: {step3_path}")
-    print(f"[DEBUG] 基础 mask 面积: {np.sum(clothing_base_mask)}, 检测到的衣服面积: {np.sum(clothing_mask_debug)}, 最终面积: {np.sum(final_clothing_mask)}")
     
     # 保存最终结果（白色背景）
     crops_dir = os.path.join(output_dir, "crops")
     os.makedirs(crops_dir, exist_ok=True)
     output_path = os.path.join(crops_dir, f"{base_name}_clothing.png")
     
-    # 再次检查 mask 是否为空
     if np.sum(final_clothing_mask) == 0:
         print("[ERROR] 最终 mask 为空，无法保存！")
         return
     
     save_clothing_with_white_bg(image_bgr, final_clothing_mask, output_path)
-    print(f"[INFO] 已保存最终衣服到: {output_path} (面积: {np.sum(final_clothing_mask)} 像素)")
+    print(f"[INFO] 已保存最终衣服到: {output_path}")
     
     # 可视化（可选）
     if visualize:
