@@ -106,17 +106,8 @@ FOOTWEAR_PROMPTS: List[str] = [
     "flat shoe",
 ]
 
-SKIN_PROMPTS: List[str] = [
-    "bare skin",
-    "bare arm",
-    "bare hand",
-    "bare leg",
-    "bare foot",
-    "bare thigh",
-    "bare calf",
-    "bare neck",
-    "human face",
-]
+SKIN_PROMPTS_FACE_NECK: List[str] = []
+SKIN_PROMPTS_LIMBS: List[str] = []
 
 
 # -----------------------------
@@ -332,24 +323,7 @@ def process_image(
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
     save_debug_overlay(image_bgr, upper_mask, os.path.join(debug_dir, "step4_upper.jpg"), (0, 255, 0), "upper")
 
-    # 5) skin (for subtraction from upper/lower)
-    print("[STEP] detecting skin ...")
-    detect_and_store("skin", SKIN_PROMPTS)
-    skin_mask = masks.get("skin", np.zeros(image_rgb.shape[:2], dtype=bool))
-    # conservative skin mask: slight erosion to avoid cutting garment edges
-    if np.any(skin_mask):
-        kernel = np.ones((3, 3), np.uint8)
-        skin_mask = cv2.erode(skin_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
-        skin_mask = remove_small_components(skin_mask, min_area_ratio=0.0005)
-    masks["skin"] = skin_mask
-    save_debug_overlay(image_bgr, skin_mask, os.path.join(debug_dir, "step5_skin.jpg"), (0, 0, 255), "skin (remove)")
-
-    # subtract skin from upper/lower
-    masks["upper"] = masks.get("upper", np.zeros_like(skin_mask)) & (~skin_mask)
-    masks["lower"] = masks.get("lower", np.zeros_like(skin_mask)) & (~skin_mask)
-    # re-save refined overlays
-    save_debug_overlay(image_bgr, masks["upper"], os.path.join(debug_dir, "step6_upper_noskin.jpg"), (0, 200, 0), "upper - skin")
-    save_debug_overlay(image_bgr, masks["lower"], os.path.join(debug_dir, "step6_lower_noskin.jpg"), (200, 200, 0), "lower - skin")
+    # Skip skin removal (per request)
 
     # Save final outputs
     outputs = [
