@@ -13,38 +13,161 @@ from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 
-# Prompt words for detecting clothing and accessories
-CLOTHING_PARTS: List[str] = [
-    "chest armor",
-    "armor",
-    "arm band",
-    "armlet",
-    "bracer",
-    "wristband",
-    "shoulder pad",
-    "pauldron",
-    "clothing",
-    "garment",
+# Prompt words for detecting different body parts
+HEADGEAR_PARTS: List[str] = [
+    "hat",  # 帽子
+    "cap",  # 鸭舌帽
+    "helmet",  # 头盔
+    "headgear",  # 头饰
+    "crown",  # 王冠
+    "tiara",  # 头冠
+    "headband",  # 头带
+    "hood",  # 兜帽
 ]
 
-# Prompt words for detecting skin/body parts (will be removed)
+UPPER_GARMENT_PARTS: List[str] = [
+    # Main garment types - emphasize full garment body
+    "dress",  # 连衣裙
+    "gown",  # 长袍/礼服
+    "robe",  # 长袍
+    "tunic",  # 束腰外衣
+    "shirt",  # 衬衫
+    "blouse",  # 女式上衣
+    "jacket",  # 夹克
+    "coat",  # 外套
+    "sweater",  # 毛衣
+    "hoodie",  # 连帽衫
+    "vest",  # 背胸
+    "tank top",  # 背心
+    "t-shirt",  # T恤
+    "top",  # 上装
+    "upper garment",  # 上衣
+    "upper body clothing",  # 上半身服装
+    "chest piece",  # 胸甲
+    "chest armor",  # 胸甲
+    "breastplate",  # 胸甲板
+    # Garment body structure
+    "garment body",  # 衣服主体
+    "clothing fabric",  # 服装面料
+    "dress bodice",  # 连衣裙上身
+    "dress top",  # 连衣裙上身部分
+    "upper part of dress",  # 连衣裙的上半部分
+]
+
+LOWER_GARMENT_PARTS: List[str] = [
+    # Specific lower garment types - emphasize pants/skirt only
+    "pants",  # 裤子
+    "trousers",  # 长裤
+    "shorts",  # 短裤
+    "skirt",  # 裙子
+    "pant legs",  # 裤腿
+    "trouser legs",  # 裤腿
+    "pant leg",  # 单条裤腿
+    "trouser leg",  # 单条裤腿
+    "leg covering",  # 腿部覆盖物
+    "waistband",  # 腰头
+    "pant waist",  # 裤腰
+    "pant crotch",  # 裤裆
+    "pant inseam",  # 裤内缝
+]
+
+FOOTWEAR_PARTS: List[str] = [
+    "shoe",  # 鞋子
+    "boot",  # 靴子
+    "sandal",  # 凉鞋
+    "sneaker",  # 运动鞋
+    "footwear",  # 鞋类
+    "boots",  # 靴子
+    "high heel",  # 高跟鞋
+    "flat shoe",  # 平底鞋
+]
+
+GLOVES_PARTS: List[str] = [
+    "glove",  # 手套
+    "gloves",  # 手套
+    "gauntlet",  # 护手
+    "hand guard",  # 手部护具
+    "wrist guard",  # 护腕
+]
+
+# Prompt words for detecting upper body accessories (arm bands, chest accessories, etc.)
+UPPER_ACCESSORY_PARTS: List[str] = [
+    # Arm accessories
+    "arm band",  # 臂环/臂章
+    "armlet",  # 臂环
+    "bracer",  # 护腕
+    "wristband",  # 腕带
+    "arm accessory",  # 手臂配饰
+    # Chest and upper body accessories
+    "chest pocket",  # 胸袋
+    "breast pocket",  # 胸前口袋
+    "chest bag",  # 胸包
+    "chest pouch",  # 胸前小包
+    # Shoulder accessories
+    "shoulder pad",  # 肩垫
+    "pauldron",  # 肩甲
+    "epaulet",  # 肩章
+    "shoulder strap",  # 肩带
+    "shoulder accessory",  # 肩部配饰
+    # Upper body decorative accessories
+    "chest badge",  # 胸前徽章
+    "chest logo",  # 胸前标志
+    "chest embroidery",  # 胸前刺绣
+]
+
+# Prompt words for detecting lower body accessories (belts, waist accessories, etc.)
+LOWER_ACCESSORY_PARTS: List[str] = [
+    # Waist and fastening system
+    "belt",  # 腰带
+    "waist belt",  # 腰部腰带
+    "tie belt",  # 系带腰带
+    "cinch strap",  # 束腰带
+    "side strap",  # 侧边系带
+    "belt buckle",  # 腰带扣
+    "buckle",  # 扣子/搭扣
+    "waist tie",  # 腰部系带
+    "waist cord",  # 腰绳
+    "waist accessory",  # 腰部配饰
+    # Lower body bags and pouches
+    "pouch",  # 小包/袋
+    "side bag",  # 侧包
+    "waist bag",  # 腰包
+    "hip bag",  # 臀包
+    "satchel",  # 挎包
+    "bag",  # 包
+    # Lower body pockets
+    "pocket",  # 口袋
+    "flap pocket",  # 有盖口袋
+    "zipper pocket",  # 拉链口袋
+    "patch pocket",  # 贴袋
+]
+
+# Prompt words for detecting exposed flesh-colored skin (will be removed)
+# Only detect visible bare skin, not body parts that might be covered by clothing
 SKIN_PARTS: List[str] = [
-    "skin",
-    "face",
-    "hand",
-    "arm",
-    "leg",
-    "body",
-    "head",
-    "neck",
+    "human face",  # 人脸
+    "facial skin",  # 面部皮肤
+    "bare hand",  # 裸露的手
+    "bare fingers",  # 裸露的手指
+    "bare palm",  # 裸露的手掌
+    "bare arm",  # 裸露的手臂
+    "bare forearm",  # 裸露的前臂
+    "bare upper arm",  # 裸露的上臂
+    "bare leg",  # 裸露的腿部
+    "bare thigh",  # 裸露的大腿
+    "bare calf",  # 裸露的小腿
+    "bare foot",  # 裸露的脚
+    "bare toes",  # 裸露的脚趾
+    "bare neck",  # 裸露的颈部
+    "naked skin",  # 裸露的皮肤
 ]
 
 # Prompt words for detecting background
 BACKGROUND_PARTS: List[str] = [
-    "background",
-    "ground",
-    "floor",
-    "wall",
+    "background",  # 背景
+    "ground",  # 地面
+    "floor",  # 地板
+    "wall",  # 墙壁
 ]
 
 
@@ -159,23 +282,31 @@ def remove_skin(
     width, height = image_pil.size
     target_sizes = torch.tensor([[height, width]], device=device)
     
+    # Use moderate thresholds to detect bare skin while avoiding clothing
+    # The multimask and area check will help filter out clothing
     try:
         results = processor.post_process_grounded_object_detection(
             outputs, input_ids=inputs["input_ids"],
-            box_threshold=0.25, text_threshold=0.2, target_sizes=target_sizes,
+            box_threshold=0.3, text_threshold=0.25, target_sizes=target_sizes,
         )[0]
     except TypeError:
         try:
             results = processor.post_process_grounded_object_detection(
                 outputs, input_ids=inputs["input_ids"],
-                threshold=0.25, target_sizes=target_sizes,
+                threshold=0.3, target_sizes=target_sizes,
             )[0]
         except TypeError:
             results = processor.post_process_object_detection(
-                outputs, threshold=0.25, target_sizes=target_sizes,
+                outputs, threshold=0.3, target_sizes=target_sizes,
             )[0]
     
     skin_boxes = results["boxes"].cpu().numpy()
+    labels = results.get("labels", [])
+    
+    print(f"[STEP 2] 检测到 {len(skin_boxes)} 个皮肤候选区域")
+    if len(skin_boxes) > 0 and len(labels) > 0:
+        for i, label in enumerate(labels[:5]):  # 只显示前5个
+            print(f"  - {i+1}: {label}")
     
     if skin_boxes.size == 0:
         print("[STEP 2] 未检测到皮肤，保留所有前景")
@@ -185,9 +316,51 @@ def remove_skin(
     sam2_predictor.set_image(image_rgb)
     skin_mask = np.zeros(image_rgb.shape[:2], dtype=bool)
     
+    # Calculate box area for reference
+    image_area = image_rgb.shape[0] * image_rgb.shape[1]
+    
     for box in skin_boxes:
-        masks, _, _ = sam2_predictor.predict(box=box, multimask_output=False)
-        skin_mask = skin_mask | (masks[0] > 0)
+        # Use multimask to get multiple candidates
+        masks, scores, _ = sam2_predictor.predict(box=box, multimask_output=True)
+        
+        # Calculate area of each mask
+        mask_areas = [np.sum(m > 0) for m in masks]
+        box_area = (box[2] - box[0]) * (box[3] - box[1])
+        
+        # Select the best mask:
+        # 1. Prefer masks that are not too small (at least 30% of box area) to avoid being too conservative
+        # 2. Prefer masks that are not too large (not more than 2x box area) to avoid including clothing
+        best_idx = None
+        best_score = -1
+        
+        for i, (mask_area, score) in enumerate(zip(mask_areas, scores)):
+            coverage = mask_area / box_area if box_area > 0 else 0
+            # Prefer masks with coverage between 30% and 200% of box area
+            if 0.3 <= coverage <= 2.0:
+                if score > best_score:
+                    best_score = score
+                    best_idx = i
+        
+        # If no mask meets the criteria, use the one with highest score that's not too large
+        if best_idx is None:
+            for i, (mask_area, score) in enumerate(zip(mask_areas, scores)):
+                coverage = mask_area / box_area if box_area > 0 else 0
+                if coverage <= 2.5 and score > best_score:  # Allow slightly larger masks
+                    best_score = score
+                    best_idx = i
+        
+        # If still no mask found, use the smallest one (most conservative)
+        if best_idx is None:
+            best_idx = np.argmin(mask_areas)
+        
+        best_mask = masks[best_idx] > 0
+        mask_area = mask_areas[best_idx]
+        
+        # Final check: skip masks that are suspiciously large (more than 2.5x box area)
+        if mask_area <= box_area * 2.5:
+            skin_mask = skin_mask | best_mask
+        else:
+            print(f"[STEP 2] 跳过可疑的大面积mask (mask面积: {mask_area}, box面积: {box_area}, 覆盖率: {mask_area/box_area:.1f}x)")
     
     # Ensure skin mask only applies within foreground to avoid background being misidentified as skin
     skin_mask = skin_mask & foreground_mask
@@ -201,6 +374,73 @@ def remove_skin(
     print(f"  - 剩余面积: {np.sum(clothing_mask)} 像素")
     
     return clothing_mask, skin_mask
+
+
+def detect_body_part(
+    image_rgb: np.ndarray,
+    base_mask: np.ndarray,
+    part_prompts: List[str],
+    part_name: str,
+    processor: AutoProcessor,
+    dino_model: AutoModelForZeroShotObjectDetection,
+    sam2_predictor: SAM2ImagePredictor,
+    device: torch.device,
+    box_threshold: float = 0.3,
+    text_threshold: float = 0.25,
+) -> np.ndarray:
+    """
+    Generic function to detect a specific body part (headgear, upper garment, lower garment, footwear, gloves).
+    Returns mask for the detected part, excluding skin.
+    """
+    print(f"[检测] 检测{part_name}...")
+    image_pil = Image.fromarray(image_rgb)
+    
+    text = ". ".join(part_prompts) + "."
+    inputs = processor(images=image_pil, text=text, return_tensors="pt").to(device)
+    
+    with torch.no_grad():
+        outputs = dino_model(**inputs)
+    
+    width, height = image_pil.size
+    target_sizes = torch.tensor([[height, width]], device=device)
+    
+    try:
+        results = processor.post_process_grounded_object_detection(
+            outputs, input_ids=inputs["input_ids"],
+            box_threshold=box_threshold, text_threshold=text_threshold, target_sizes=target_sizes,
+        )[0]
+    except TypeError:
+        try:
+            results = processor.post_process_grounded_object_detection(
+                outputs, input_ids=inputs["input_ids"],
+                threshold=box_threshold, target_sizes=target_sizes,
+            )[0]
+        except TypeError:
+            results = processor.post_process_object_detection(
+                outputs, threshold=box_threshold, target_sizes=target_sizes,
+            )[0]
+    
+    part_boxes = results["boxes"].cpu().numpy()
+    
+    if part_boxes.size == 0:
+        print(f"[检测] 未检测到{part_name}，返回空 mask")
+        return np.zeros(image_rgb.shape[:2], dtype=bool)
+    
+    sam2_predictor.set_image(image_rgb)
+    part_mask = np.zeros(image_rgb.shape[:2], dtype=bool)
+    
+    for box in part_boxes:
+        masks, _, _ = sam2_predictor.predict(box=box, multimask_output=False)
+        mask = masks[0] > 0
+        part_mask = part_mask | mask
+    
+    # Ensure part mask is within base mask
+    part_mask = part_mask & base_mask
+    
+    print(f"[检测] 检测到{part_name}区域，面积: {np.sum(part_mask)} 像素")
+    return part_mask
+
+
 
 
 def save_clothing_with_white_bg(
@@ -316,10 +556,10 @@ def process_single_image(
     visualize: bool,
 ) -> None:
     """
-    Process single image with three-step pipeline:
+    Process single image with body part segmentation:
     1. Remove background
-    2. Remove skin
-    3. Segment and merge clothing (including small accessories)
+    2. Detect 5 body parts separately: headgear, upper garment, lower garment, footwear, gloves
+    3. Save each part as a separate image with white background
     """
     image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if image_bgr is None:
@@ -329,12 +569,19 @@ def process_single_image(
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     base_name = os.path.splitext(os.path.basename(image_path))[0]
     
-    debug_dir = os.path.join(output_dir, "debug")
-    os.makedirs(debug_dir, exist_ok=True)
+    # Only create debug directory if visualize is enabled
+    if visualize:
+        debug_dir = os.path.join(output_dir, "debug")
+        os.makedirs(debug_dir, exist_ok=True)
+    
+    # Main output directory for final results
+    parts_dir = os.path.join(output_dir, "parts_white_bg")
+    os.makedirs(parts_dir, exist_ok=True)
     
     print(f"\n[INFO] 开始处理: {os.path.basename(image_path)}")
     
-    foreground_mask = remove_background(
+    # Step 1: Remove background
+    clothing_base_mask = remove_background(
         image_rgb=image_rgb,
         processor=processor,
         dino_model=dino_model,
@@ -342,130 +589,129 @@ def process_single_image(
         device=device,
     )
     
-    step1_path = os.path.join(debug_dir, f"{base_name}_step1_foreground.png")
-    save_mask_visualization(
-        image_bgr=image_bgr,
-        mask=foreground_mask,
-        output_path=step1_path,
-        color=(0, 255, 0),
-        title="Step 1: Foreground (Background Removed)",
-    )
-    print(f"[DEBUG] 已保存步骤1结果到: {step1_path}")
+    if visualize:
+        step1_path = os.path.join(debug_dir, f"{base_name}_step1_background_removed.png")
+        save_mask_visualization(
+            image_bgr=image_bgr,
+            mask=clothing_base_mask,
+            output_path=step1_path,
+            color=(0, 255, 0),
+            title="Step 1: Background Removed",
+        )
     
-    clothing_base_mask, skin_mask = remove_skin(
+    # Step 2: Detect each body part separately
+    body_parts = [
+        (HEADGEAR_PARTS, "headgear", "帽子"),
+        (UPPER_GARMENT_PARTS, "upper_garment", "上衣"),
+        (LOWER_GARMENT_PARTS, "lower_garment", "裤子"),
+        (FOOTWEAR_PARTS, "footwear", "鞋子"),
+        (GLOVES_PARTS, "gloves", "手套"),
+    ]
+    
+    part_masks = {}
+    for part_prompts, part_key, part_name in body_parts:
+        part_mask = detect_body_part(
+            image_rgb=image_rgb,
+            base_mask=clothing_base_mask,
+            part_prompts=part_prompts,
+            part_name=part_name,
+            processor=processor,
+            dino_model=dino_model,
+            sam2_predictor=sam2_predictor,
+            device=device,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+        )
+        part_masks[part_key] = part_mask
+    
+    # Step 3: Detect accessories separately (upper and lower)
+    print("\n[STEP 3] 检测配饰...")
+    
+    # Detect upper body accessories
+    upper_accessory_mask = detect_body_part(
         image_rgb=image_rgb,
-        foreground_mask=foreground_mask,
+        base_mask=clothing_base_mask,
+        part_prompts=UPPER_ACCESSORY_PARTS,
+        part_name="上衣配饰",
         processor=processor,
         dino_model=dino_model,
         sam2_predictor=sam2_predictor,
         device=device,
+        box_threshold=box_threshold,
+        text_threshold=text_threshold,
     )
     
-    # Detect clothing regions for step 2 visualization and step 3 processing
-    image_pil = Image.fromarray(image_rgb)
-    text = ". ".join(CLOTHING_PARTS) + "."
-    inputs = processor(images=image_pil, text=text, return_tensors="pt").to(device)
-    
-    with torch.no_grad():
-        outputs = dino_model(**inputs)
-    
-    width, height = image_pil.size
-    target_sizes = torch.tensor([[height, width]], device=device)
-    
-    try:
-        results = processor.post_process_grounded_object_detection(
-            outputs, input_ids=inputs["input_ids"],
-            box_threshold=0.3, text_threshold=0.25, target_sizes=target_sizes,
-        )[0]
-    except TypeError:
-        try:
-            results = processor.post_process_grounded_object_detection(
-                outputs, input_ids=inputs["input_ids"],
-                threshold=0.3, target_sizes=target_sizes,
-            )[0]
-        except TypeError:
-            results = processor.post_process_object_detection(
-                outputs, threshold=0.3, target_sizes=target_sizes,
-            )[0]
-    
-    clothing_boxes_debug = results["boxes"].cpu().numpy()
-    
-    clothing_mask_debug = np.zeros(image_rgb.shape[:2], dtype=bool)
-    if clothing_boxes_debug.size > 0:
-        sam2_predictor.set_image(image_rgb)
-        for box in clothing_boxes_debug:
-            masks, _, _ = sam2_predictor.predict(box=box, multimask_output=False)
-            clothing_mask_debug = clothing_mask_debug | (masks[0] > 0)
-        clothing_mask_debug = clothing_mask_debug & foreground_mask
-    
-    step2_path = os.path.join(debug_dir, f"{base_name}_step2_no_skin.png")
-    save_multi_mask_visualization(
-        image_bgr=image_bgr,
-        masks={
-            "Skin (Red)": (skin_mask, (0, 0, 255)),
-            "Clothing (Yellow)": (clothing_mask_debug, (0, 255, 255)),
-            "Remaining (Green)": (clothing_base_mask, (0, 255, 0)),
-        },
-        output_path=step2_path,
-        title="Step 2: Red=Skin, Yellow=Clothing, Green=Remaining",
+    # Detect lower body accessories
+    lower_accessory_mask = detect_body_part(
+        image_rgb=image_rgb,
+        base_mask=clothing_base_mask,
+        part_prompts=LOWER_ACCESSORY_PARTS,
+        part_name="下衣配饰",
+        processor=processor,
+        dino_model=dino_model,
+        sam2_predictor=sam2_predictor,
+        device=device,
+        box_threshold=box_threshold,
+        text_threshold=text_threshold,
     )
-    print(f"[DEBUG] 已保存步骤2结果到: {step2_path}")
     
-    print("[STEP 3] 合并衣服区域和褶皱...")
+    # Step 4: Merge accessories with corresponding body parts and save final results
+    print("\n[STEP 4] 合并配饰并保存最终结果...")
     
-    if np.sum(clothing_mask_debug) > 0:
-        # Strategy: Use detected clothing (yellow) as base, then supplement with base mask (green) for wrinkles
-        # 1. Dilate yellow mask to include wrinkle regions
-        kernel_expand = np.ones((10, 10), np.uint8)
-        expanded_yellow = cv2.dilate(clothing_mask_debug.astype(np.uint8), kernel_expand, iterations=1).astype(bool)
-        
-        # 2. Use green mask within expanded yellow region to supplement wrinkles
-        final_clothing_mask = (clothing_base_mask & expanded_yellow) | clothing_mask_debug
-    else:
-        final_clothing_mask = clothing_base_mask
+    # Define output file mapping (simplified names)
+    output_files = {
+        "hat": ("headgear", "帽子"),
+        "coat": ("upper_garment", "上衣"),
+        "dress": ("lower_garment", "裤子"),
+        "shoes": ("footwear", "鞋子"),
+        "gloves": ("gloves", "手套"),
+    }
     
-    # Morphological operations: fill small holes (use small kernel to preserve wrinkles)
-    kernel = np.ones((3, 3), np.uint8)
-    final_clothing_mask = cv2.morphologyEx(final_clothing_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
+    # Merge upper garment + upper accessories
+    upper_garment_final = part_masks.get("upper_garment", np.zeros(image_rgb.shape[:2], dtype=bool)) | upper_accessory_mask
+    if np.sum(upper_garment_final) > 0:
+        kernel = np.ones((3, 3), np.uint8)
+        upper_garment_final = cv2.morphologyEx(upper_garment_final.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
+        output_path = os.path.join(parts_dir, f"{base_name}_coat.png")
+        save_clothing_with_white_bg(image_bgr, upper_garment_final, output_path)
+        print(f"[INFO] ✓ 上衣: {output_path}")
     
-    print(f"[STEP 3] 最终面积: {np.sum(final_clothing_mask)} 像素")
+    # Merge lower garment + lower accessories
+    lower_garment_final = part_masks.get("lower_garment", np.zeros(image_rgb.shape[:2], dtype=bool)) | lower_accessory_mask
+    if np.sum(lower_garment_final) > 0:
+        kernel = np.ones((3, 3), np.uint8)
+        lower_garment_final = cv2.morphologyEx(lower_garment_final.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
+        output_path = os.path.join(parts_dir, f"{base_name}_dress.png")
+        save_clothing_with_white_bg(image_bgr, lower_garment_final, output_path)
+        print(f"[INFO] ✓ 下衣: {output_path}")
     
-    step3_path = os.path.join(debug_dir, f"{base_name}_step3_clothing.png")
-    save_multi_mask_visualization(
-        image_bgr=image_bgr,
-        masks={
-            "Base Mask (Green)": (clothing_base_mask, (0, 255, 0)),
-            "Detected Clothing (Yellow)": (clothing_mask_debug, (0, 255, 255)),
-            "Final Result (Cyan)": (final_clothing_mask, (255, 255, 0)),
-        },
-        output_path=step3_path,
-        title="Step 3: Green=Base, Yellow=Detected, Cyan=Final",
-    )
-    print(f"[DEBUG] 已保存步骤3结果到: {step3_path}")
+    # Save other parts
+    for output_name, (part_key, part_name) in output_files.items():
+        if output_name in ["coat", "dress"]:  # Already saved above
+            continue
+        part_mask = part_masks.get(part_key, np.zeros(image_rgb.shape[:2], dtype=bool))
+        if np.sum(part_mask) > 0:
+            output_path = os.path.join(parts_dir, f"{base_name}_{output_name}.png")
+            save_clothing_with_white_bg(image_bgr, part_mask, output_path)
+            print(f"[INFO] ✓ {part_name}: {output_path}")
     
-    crops_dir = os.path.join(output_dir, "crops")
-    os.makedirs(crops_dir, exist_ok=True)
-    output_path = os.path.join(crops_dir, f"{base_name}_clothing.png")
-    
-    if np.sum(final_clothing_mask) == 0:
-        print("[ERROR] 最终 mask 为空，无法保存！")
-        return
-    
-    save_clothing_with_white_bg(image_bgr, final_clothing_mask, output_path)
-    print(f"[INFO] 已保存最终衣服到: {output_path}")
-    
+    # Save combined visualization only if requested
     if visualize:
         vis_dir = os.path.join(output_dir, "visualizations")
         os.makedirs(vis_dir, exist_ok=True)
-        
-        vis_path = os.path.join(vis_dir, f"{base_name}_vis.png")
-        save_mask_visualization(
+        vis_path = os.path.join(vis_dir, f"{base_name}_all.png")
+        save_multi_mask_visualization(
             image_bgr=image_bgr,
-            mask=final_clothing_mask,
+            masks={
+                "Headgear": (part_masks.get("headgear", np.zeros(image_rgb.shape[:2], dtype=bool)), (0, 255, 255)),
+                "Upper Garment": (upper_garment_final, (0, 255, 0)),
+                "Lower Garment": (lower_garment_final, (255, 255, 0)),
+                "Footwear": (part_masks.get("footwear", np.zeros(image_rgb.shape[:2], dtype=bool)), (255, 0, 255)),
+                "Gloves": (part_masks.get("gloves", np.zeros(image_rgb.shape[:2], dtype=bool)), (255, 0, 0)),
+            },
             output_path=vis_path,
-            color=(0, 255, 0),
+            title="All Parts",
         )
-        print(f"[INFO] 已保存可视化到: {vis_path}")
 
 
 def main():
