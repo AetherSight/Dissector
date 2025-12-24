@@ -26,6 +26,17 @@ SAM2_CHECKPOINT_PATH = os.path.join(PROJECT_ROOT, "models", "sam2.1_hiera_base_p
 # Prompts
 # -----------------------------
 HEADWEAR_PROMPTS: List[str] = [
+    # head / face region (for removal)
+    "head",
+    "human head",
+    "face",
+    "facial area",
+    "hair",
+    "hairstyle",
+    "ponytail hair",
+    "cat ear",
+    "animal ear",
+    # headwear (fallbacks if present)
     "headwear",
     "hat",
     "cap",
@@ -228,6 +239,18 @@ def save_with_white_bg(image_bgr: np.ndarray, mask: np.ndarray, output_path: str
     print(f"[INFO] saved: {output_path}")
 
 
+def save_debug_overlay(image_bgr: np.ndarray, mask: np.ndarray, output_path: str, color: Tuple[int, int, int], title: str):
+    vis = image_bgr.copy()
+    overlay = vis.copy()
+    overlay[mask] = color
+    vis = cv2.addWeighted(vis, 0.65, overlay, 0.35, 0)
+    mask_uint8 = (mask.astype(np.uint8)) * 255
+    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(vis, contours, -1, color, 2)
+    cv2.putText(vis, title, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+    cv2.imwrite(output_path, vis)
+
+
 def process_image(
     image_path: str,
     output_dir: str,
@@ -245,6 +268,12 @@ def process_image(
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     image_pil = Image.fromarray(image_rgb)
     base = os.path.splitext(os.path.basename(image_path))[0]
+
+    # per-image output dirs
+    img_out_dir = os.path.join(output_dir, base)
+    debug_dir = os.path.join(output_dir, "debug", base)
+    os.makedirs(img_out_dir, exist_ok=True)
+    os.makedirs(debug_dir, exist_ok=True)
 
     # Detect in a fixed order so we can refine masks with each other
     masks = {}
@@ -265,6 +294,7 @@ def process_image(
     # 1) shoes first (used to clean lower)
     print("[STEP] detecting shoes ...")
     detect_and_store("shoes", FOOTWEAR_PROMPTS)
+    save_debug_overlay(image_bgr, masks["shoes"], os.path.join(debug_dir, "step1_shoes.jpg"), (255, 0, 255), "shoes")
 
     # 2) lower
     print("[STEP] detecting lower ...")
@@ -272,10 +302,18 @@ def process_image(
     lower_mask = masks.get("lower_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
     masks["lower"] = lower_mask
+    save_debug_overlay(image_bgr, lower_mask, os.path.join(debug_dir, "step2_lower.jpg"), (255, 255, 0), "lower")
 
     # 3) head (only for removal, no saving)
     print("[STEP] detecting head (for removal) ...")
     detect_and_store("head", HEADWEAR_PROMPTS)
+    # Expand head mask to ensure removal of head region (no arbitrary top strip)
+    head_mask = masks.get("head", np.zeros(image_rgb.shape[:2], dtype=bool))
+    if np.any(head_mask):
+        kernel = np.ones((15, 15), np.uint8)
+        head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+    masks["head"] = head_mask
+    save_debug_overlay(image_bgr, head_mask, os.path.join(debug_dir, "step3_head.jpg"), (0, 165, 255), "head (remove)")
 
     # 4) upper
     print("[STEP] detecting upper ...")
@@ -292,16 +330,36 @@ def process_image(
     masks["upper"] = upper_mask
     masks["lower"] = remove_small_components(masks.get("lower", np.zeros_like(upper_mask)), min_area_ratio=0.001)
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
+    save_debug_overlay(image_bgr, upper_mask, os.path.join(debug_dir, "step4_upper.jpg"), (0, 255, 0), "upper")
+
+    # 5) skin (for subtraction from upper/lower)
+    print("[STEP] detecting skin ...")
+    detect_and_store("skin", SKIN_PROMPTS)
+    skin_mask = masks.get("skin", np.zeros(image_rgb.shape[:2], dtype=bool))
+    # conservative skin mask: slight erosion to avoid cutting garment edges
+    if np.any(skin_mask):
+        kernel = np.ones((3, 3), np.uint8)
+        skin_mask = cv2.erode(skin_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+        skin_mask = remove_small_components(skin_mask, min_area_ratio=0.0005)
+    masks["skin"] = skin_mask
+    save_debug_overlay(image_bgr, skin_mask, os.path.join(debug_dir, "step5_skin.jpg"), (0, 0, 255), "skin (remove)")
+
+    # subtract skin from upper/lower
+    masks["upper"] = masks.get("upper", np.zeros_like(skin_mask)) & (~skin_mask)
+    masks["lower"] = masks.get("lower", np.zeros_like(skin_mask)) & (~skin_mask)
+    # re-save refined overlays
+    save_debug_overlay(image_bgr, masks["upper"], os.path.join(debug_dir, "step6_upper_noskin.jpg"), (0, 200, 0), "upper - skin")
+    save_debug_overlay(image_bgr, masks["lower"], os.path.join(debug_dir, "step6_lower_noskin.jpg"), (200, 200, 0), "lower - skin")
 
     # Save final outputs
     outputs = [
-        ("head", "head"),
         ("upper", "upper"),
         ("lower", "lower"),
         ("shoes", "shoes"),
+        ("head", "head"),  # optional head output (can be ignored)
     ]
     for key, name in outputs:
-        out_path = os.path.join(output_dir, f"{base}_{name}.png")
+        out_path = os.path.join(img_out_dir, f"{name}.jpg")
         save_with_white_bg(image_bgr, masks.get(key, np.zeros(image_rgb.shape[:2], dtype=bool)), out_path)
 
 
