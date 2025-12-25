@@ -1,7 +1,13 @@
 import argparse
 import os
+import sys
 
-from .pipeline import run_batch
+# Allow running both as module (-m ffxiv_seg.cli) and as script (python ffxiv_seg/cli.py)
+if __package__ is None or __package__ == "":
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from ffxiv_seg.pipeline import run_batch  # type: ignore
+else:
+    from .pipeline import run_batch
 
 
 def main():
