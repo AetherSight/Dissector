@@ -216,13 +216,8 @@ def save_with_white_bg(image_bgr: np.ndarray, mask: np.ndarray, output_path: str
     if np.sum(mask) == 0:
         print(f"[WARN] mask is empty, skip save: {output_path}")
         return
-    # Mild cleanup to reduce background speckles
     mask_uint8 = (mask.astype(np.uint8)) * 255
-    kernel = np.ones((3, 3), np.uint8)
-    mask_uint8 = cv2.morphologyEx(mask_uint8, cv2.MORPH_CLOSE, kernel)
-    mask_uint8 = cv2.morphologyEx(mask_uint8, cv2.MORPH_OPEN, kernel)
-
-    # Crop to mask bbox with small padding
+    # crop to bbox of mask with small pad
     ys, xs = np.where(mask_uint8 > 0)
     y0, y1 = ys.min(), ys.max()
     x0, x1 = xs.min(), xs.max()
@@ -236,10 +231,12 @@ def save_with_white_bg(image_bgr: np.ndarray, mask: np.ndarray, output_path: str
     mask_crop = mask_uint8[y0 : y1 + 1, x0 : x1 + 1]
 
     h, w = mask_crop.shape
-    max_side = max(h, w)
     target = 512
-    # Downscale if needed; do not upscale to avoid oversized rendering
-    scale = min(1.0, target / max_side) if max_side > 0 else 1.0
+    canvas = np.full((target, target, 3), 255, dtype=np.uint8)
+    mask_canvas = np.zeros((target, target), dtype=np.uint8)
+
+    # center placement without upscaling; only downscale if larger than target
+    scale = min(1.0, target / max(h, w)) if max(h, w) > 0 else 1.0
     if scale < 1.0:
         new_w = max(1, int(w * scale))
         new_h = max(1, int(h * scale))
@@ -247,15 +244,14 @@ def save_with_white_bg(image_bgr: np.ndarray, mask: np.ndarray, output_path: str
         mask_crop = cv2.resize(mask_crop, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
         h, w = new_h, new_w
 
-    canvas = np.full((target, target, 3), 255, dtype=np.uint8)
-    mask_canvas = np.zeros((target, target), dtype=np.uint8)
     y_off = (target - h) // 2
     x_off = (target - w) // 2
     canvas[y_off : y_off + h, x_off : x_off + w] = img_crop
     mask_canvas[y_off : y_off + h, x_off : x_off + w] = mask_crop
 
     fg = cv2.bitwise_and(canvas, canvas, mask=mask_canvas)
-    bg = cv2.bitwise_and(canvas, canvas, mask=cv2.bitwise_not(mask_canvas))
+    white = np.full_like(canvas, 255, dtype=np.uint8)
+    bg = cv2.bitwise_and(white, white, mask=cv2.bitwise_not(mask_canvas))
     out = cv2.add(fg, bg)
     cv2.imwrite(output_path, out)
     print(f"[INFO] saved: {output_path}")
