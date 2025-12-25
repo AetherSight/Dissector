@@ -216,34 +216,11 @@ def save_with_white_bg(image_bgr: np.ndarray, mask: np.ndarray, output_path: str
     if np.sum(mask) == 0:
         print(f"[WARN] mask is empty, skip save: {output_path}")
         return
-    ys, xs = np.where(mask)
-    y0, y1 = ys.min(), ys.max()
-    x0, x1 = xs.min(), xs.max()
-    pad = 5
-    y0 = max(0, y0 - pad)
-    y1 = min(mask.shape[0] - 1, y1 + pad)
-    x0 = max(0, x0 - pad)
-    x1 = min(mask.shape[1] - 1, x1 + pad)
-
-    mask_crop = mask[y0 : y1 + 1, x0 : x1 + 1]
-    img_crop = image_bgr[y0 : y1 + 1, x0 : x1 + 1]
-
-    h, w = mask_crop.shape
-    side = max(h, w)
-    canvas = np.full((side, side, 3), 255, dtype=np.uint8)
-    mask_canvas = np.zeros((side, side), dtype=np.uint8)
-
-    y_off = (side - h) // 2
-    x_off = (side - w) // 2
-    canvas[y_off : y_off + h, x_off : x_off + w] = img_crop
-    mask_canvas[y_off : y_off + h, x_off : x_off + w] = (mask_crop.astype(np.uint8)) * 255
-
-    fg = cv2.bitwise_and(canvas, canvas, mask=mask_canvas)
-    bg = cv2.bitwise_and(canvas, canvas, mask=cv2.bitwise_not(mask_canvas))
+    mask_uint8 = (mask.astype(np.uint8)) * 255
+    white = np.full_like(image_bgr, 255, dtype=np.uint8)
+    fg = cv2.bitwise_and(image_bgr, image_bgr, mask=mask_uint8)
+    bg = cv2.bitwise_and(white, white, mask=cv2.bitwise_not(mask_uint8))
     out = cv2.add(fg, bg)
-
-    # resize to 512x512 for consistent centered output
-    out = cv2.resize(out, (512, 512), interpolation=cv2.INTER_AREA)
     cv2.imwrite(output_path, out)
     print(f"[INFO] saved: {output_path}")
 
