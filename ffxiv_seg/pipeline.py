@@ -288,7 +288,7 @@ def process_image(
     detect_and_store("lower_raw", LOWER_PROMPTS)
     lower_mask = masks.get("lower_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
-    masks["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+    masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001, open_ksize=3, close_ksize=3)
     save_debug_overlay(image_bgr, masks["lower"], os.path.join(debug_dir, "step2_lower.jpg"), (255, 255, 0), "lower")
 
     # 3) head (remove only)
@@ -311,16 +311,16 @@ def process_image(
         & (~masks.get("shoes", np.zeros_like(upper_mask)))
         & (~masks.get("head", np.zeros_like(upper_mask)))
     )
-    upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
+    upper_mask = clean_mask(upper_mask, min_area_ratio=0.001, open_ksize=3, close_ksize=3)
     masks["upper"] = upper_mask
-    masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
+    masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001, open_ksize=3, close_ksize=3)
     save_debug_overlay(image_bgr, upper_mask, os.path.join(debug_dir, "step4_upper.jpg"), (0, 255, 0), "upper")
 
     # 5) hands removal from upper
     print("[STEP] detecting hands (remove from upper)...")
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
-    hand_mask = remove_small_components(hand_mask, min_area_ratio=0.0005)
+    hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005, open_ksize=3, close_ksize=3)
     if np.any(hand_mask):
         kernel = np.ones((5, 5), np.uint8)
         hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
@@ -328,7 +328,7 @@ def process_image(
     save_debug_overlay(image_bgr, hand_mask, os.path.join(debug_dir, "step5_hands.jpg"), (0, 0, 255), "hands (remove)")
 
     masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
-    masks["upper"] = remove_small_components(masks["upper"], min_area_ratio=0.001)
+    masks["upper"] = clean_mask(masks["upper"], min_area_ratio=0.001, open_ksize=3, close_ksize=3)
     save_debug_overlay(image_bgr, masks["upper"], os.path.join(debug_dir, "step6_upper_nohands.jpg"), (0, 200, 0), "upper - hands")
 
     # Save final outputs
