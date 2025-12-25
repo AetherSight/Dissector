@@ -41,7 +41,7 @@ python -m ffxiv_seg.cli \
 - 阈值可按需要调整（提高阈值=更严格，降低=更宽松）。
 
 ## 输出
-- 最终结果：`data/outputs/<图片文件名>/upper.jpg`, `lower.jpg`, `shoes.jpg`, `head.jpg`（head 仅供参考）, `hands.jpg`。输出为白底，若超大则裁剪到主体后下采样并居中放置到 512x512（不放大以避免过大）。
+- 最终结果：`data/outputs/<图片文件名>/upper.jpg`, `lower.jpg`, `shoes.jpg`, `head.jpg`（head 仅供参考）, `hands.jpg`，白底。
 - 调试可视化：`data/outputs/debug/<图片文件名>/step*.jpg`
 
 ## 当前分割逻辑（pipeline）
