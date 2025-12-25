@@ -216,11 +216,34 @@ def save_with_white_bg(image_bgr: np.ndarray, mask: np.ndarray, output_path: str
     if np.sum(mask) == 0:
         print(f"[WARN] mask is empty, skip save: {output_path}")
         return
-    mask_uint8 = (mask.astype(np.uint8)) * 255
-    white = np.full_like(image_bgr, 255, dtype=np.uint8)
-    fg = cv2.bitwise_and(image_bgr, image_bgr, mask=mask_uint8)
-    bg = cv2.bitwise_and(white, white, mask=cv2.bitwise_not(mask_uint8))
+    ys, xs = np.where(mask)
+    y0, y1 = ys.min(), ys.max()
+    x0, x1 = xs.min(), xs.max()
+    pad = 5
+    y0 = max(0, y0 - pad)
+    y1 = min(mask.shape[0] - 1, y1 + pad)
+    x0 = max(0, x0 - pad)
+    x1 = min(mask.shape[1] - 1, x1 + pad)
+
+    mask_crop = mask[y0 : y1 + 1, x0 : x1 + 1]
+    img_crop = image_bgr[y0 : y1 + 1, x0 : x1 + 1]
+
+    h, w = mask_crop.shape
+    side = max(h, w)
+    canvas = np.full((side, side, 3), 255, dtype=np.uint8)
+    mask_canvas = np.zeros((side, side), dtype=np.uint8)
+
+    y_off = (side - h) // 2
+    x_off = (side - w) // 2
+    canvas[y_off : y_off + h, x_off : x_off + w] = img_crop
+    mask_canvas[y_off : y_off + h, x_off : x_off + w] = (mask_crop.astype(np.uint8)) * 255
+
+    fg = cv2.bitwise_and(canvas, canvas, mask=mask_canvas)
+    bg = cv2.bitwise_and(canvas, canvas, mask=cv2.bitwise_not(mask_canvas))
     out = cv2.add(fg, bg)
+
+    # resize to 512x512 for consistent centered output
+    out = cv2.resize(out, (512, 512), interpolation=cv2.INTER_AREA)
     cv2.imwrite(output_path, out)
     print(f"[INFO] saved: {output_path}")
 
@@ -288,7 +311,7 @@ def process_image(
     detect_and_store("lower_raw", LOWER_PROMPTS)
     lower_mask = masks.get("lower_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
-    masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001, open_ksize=3, close_ksize=3)
+    masks["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
     save_debug_overlay(image_bgr, masks["lower"], os.path.join(debug_dir, "step2_lower.jpg"), (255, 255, 0), "lower")
 
     # 3) head (remove only)
@@ -311,16 +334,16 @@ def process_image(
         & (~masks.get("shoes", np.zeros_like(upper_mask)))
         & (~masks.get("head", np.zeros_like(upper_mask)))
     )
-    upper_mask = clean_mask(upper_mask, min_area_ratio=0.001, open_ksize=3, close_ksize=3)
+    upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
     masks["upper"] = upper_mask
-    masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001, open_ksize=3, close_ksize=3)
+    masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
     save_debug_overlay(image_bgr, upper_mask, os.path.join(debug_dir, "step4_upper.jpg"), (0, 255, 0), "upper")
 
     # 5) hands removal from upper
     print("[STEP] detecting hands (remove from upper)...")
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
-    hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005, open_ksize=3, close_ksize=3)
+    hand_mask = remove_small_components(hand_mask, min_area_ratio=0.0005)
     if np.any(hand_mask):
         kernel = np.ones((5, 5), np.uint8)
         hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
@@ -328,7 +351,7 @@ def process_image(
     save_debug_overlay(image_bgr, hand_mask, os.path.join(debug_dir, "step5_hands.jpg"), (0, 0, 255), "hands (remove)")
 
     masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
-    masks["upper"] = clean_mask(masks["upper"], min_area_ratio=0.001, open_ksize=3, close_ksize=3)
+    masks["upper"] = remove_small_components(masks["upper"], min_area_ratio=0.001)
     save_debug_overlay(image_bgr, masks["upper"], os.path.join(debug_dir, "step6_upper_nohands.jpg"), (0, 200, 0), "upper - hands")
 
     # Save final outputs

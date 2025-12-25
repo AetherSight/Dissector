@@ -12,8 +12,9 @@ ffxiv_gear_seg_rebuild.py  # 旧入口（将被替换），暂保留
 models/
   ├─ sam2.1_hiera_base_plus.pt
   └─ sam2_configs/           # Hydra 配置目录（包含 sam2.1_hiera_b+.yaml 等）
-images/                     # 输入图片目录
-outputs/                    # 运行后输出；每次运行会自动清空
+data/
+  ├─ images/                # 输入图片目录（默认）
+  └─ outputs/               # 输出目录（运行前自动清空）
 ```
 
 ## 依赖
@@ -31,17 +32,17 @@ outputs/                    # 运行后输出；每次运行会自动清空
 python -m ffxiv_seg.cli \
   --box-threshold 0.3 \
   --text-threshold 0.25 \
-  --input-dir /path/to/images \
-  --output-dir /path/to/outputs
+  --input-dir /path/to/images \   # 默认 data/images
+  --output-dir /path/to/outputs   # 默认 data/outputs
 ```
 说明：
-- 不指定 input/output 时，默认 `images/` 与 `outputs/`。
+- 不指定 input/output 时，默认 `data/images` 与 `data/outputs`。
 - 每次运行前会自动清空 `outputs/`。
 - 阈值可按需要调整（提高阈值=更严格，降低=更宽松）。
 
 ## 输出
-- 最终结果：`outputs/<图片文件名>/upper.jpg`, `lower.jpg`, `shoes.jpg`, `head.jpg`（head 仅供参考）, `hands.jpg`
-- 调试可视化：`outputs/debug/<图片文件名>/step*.jpg`
+- 最终结果：`data/outputs/<图片文件名>/upper.jpg`, `lower.jpg`, `shoes.jpg`, `head.jpg`（head 仅供参考）, `hands.jpg`。输出为白底、裁剪后居中，统一 512x512。
+- 调试可视化：`data/outputs/debug/<图片文件名>/step*.jpg`
 
 ## 当前分割逻辑（pipeline）
 1. 检测鞋（shoes）
