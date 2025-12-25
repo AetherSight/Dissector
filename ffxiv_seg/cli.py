@@ -1,13 +1,7 @@
 import argparse
 import os
-import sys
 
-# Allow running both as module (-m ffxiv_seg.cli) and as script (python ffxiv_seg/cli.py)
-if __package__ is None or __package__ == "":
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from ffxiv_seg.pipeline import run_batch  # type: ignore
-else:
-    from .pipeline import run_batch
+from .pipeline import run_batch
 
 
 def main():
@@ -20,8 +14,8 @@ def main():
     args = parser.parse_args()
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    input_dir = args.input_dir or os.path.join(project_root, "images")
-    output_dir = args.output_dir or os.path.join(project_root, "outputs")
+    input_dir = args.input_dir or os.path.join(project_root, "data", "images")
+    output_dir = args.output_dir or os.path.join(project_root, "data", "outputs")
 
     run_batch(
         input_dir=input_dir,

@@ -17,6 +17,7 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 # -----------------------------
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SAM2_CONFIG_NAME = "sam2.1_hiera_b+"
+SAM2_CONFIG_DIR = os.path.join(PROJECT_ROOT, "models", "sam2_configs")
 SAM2_CHECKPOINT_PATH = os.path.join(PROJECT_ROOT, "models", "sam2.1_hiera_base_plus.pt")
 
 # -----------------------------
@@ -114,7 +115,7 @@ def load_models(dino_model_name: str, device: torch.device) -> Tuple[AutoProcess
     dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(dino_model_name).to(device)
 
     hydra.core.global_hydra.GlobalHydra.instance().clear()
-    hydra.initialize_config_module("sam2_configs", version_base="2.1")
+    hydra.initialize_config_dir(config_dir=SAM2_CONFIG_DIR, version_base="2.1")
 
     sam2_model = build_sam2(
         SAM2_CONFIG_NAME,
@@ -336,6 +337,7 @@ def process_image(
         ("lower", "lower"),
         ("shoes", "shoes"),
         ("head", "head"),
+        ("hands", "hands"),
     ]
     for key, name in outputs:
         out_path = os.path.join(img_out_dir, f"{name}.jpg")
