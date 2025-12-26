@@ -405,7 +405,7 @@ def run_batch(
         )
         results_all.append(res)
 
-    logger.info("done.")
+    # end
     return results_all
 
 
