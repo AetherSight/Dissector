@@ -5,6 +5,9 @@ from typing import Dict, List, Tuple
 
 # Logger
 logger = logging.getLogger(__name__)
+# Suppress noisy info logs from transformers about numpy image layout
+logging.getLogger("transformers.image_utils").setLevel(logging.WARNING)
+logging.getLogger("transformers.image_processing_utils").setLevel(logging.WARNING)
 
 import cv2
 import numpy as np
