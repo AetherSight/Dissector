@@ -1,9 +1,10 @@
-# Logger
-logger = logging.getLogger(__name__)
 import os
 import base64
 import logging
 from typing import Dict, List, Tuple
+
+# Logger
+logger = logging.getLogger(__name__)
 
 import cv2
 import numpy as np
@@ -312,8 +313,6 @@ def process_image(
     lower_mask = masks.get("lower_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
     masks["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
-    if save_files:
-    # no file saving in pipeline
 
     # 3) head (remove only)
     logger.info("[STEP] detecting head (for removal) ...")
@@ -323,8 +322,6 @@ def process_image(
         kernel = np.ones((15, 15), np.uint8)
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["head"] = head_mask
-    if save_files:
-    # no file saving in pipeline
 
     # 4) upper
     logger.info("[STEP] detecting upper ...")
@@ -339,8 +336,6 @@ def process_image(
     upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
-    if save_files:
-    # no file saving in pipeline
 
     # 5) hands removal from upper
     logger.info("[STEP] detecting hands (remove from upper)...")
