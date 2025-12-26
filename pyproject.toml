@@ -1,7 +1,7 @@
 [project]
-name = "ffxiv-split"
+name = "ffxiv-gear-slicer"
 version = "0.1.0"
-description = ""
+description = "FFXIV gear segmentation (head/upper/lower/shoes/hands)"
 authors = [
     {name = "ricterzheng",email = "ricterzheng@tencent.com"}
 ]
