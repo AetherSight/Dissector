@@ -1,5 +1,8 @@
+# Logger
+logger = logging.getLogger(__name__)
 import os
-import shutil
+import base64
+import logging
 from typing import Dict, List, Tuple
 
 import cv2
@@ -212,12 +215,12 @@ def mask_from_boxes(
     return mask_total
 
 
-def save_with_white_bg(image_bgr: np.ndarray, mask: np.ndarray, output_path: str):
+def render_white_bg(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Return white-background image cropped to mask bbox (with small padding)."""
     if np.sum(mask) == 0:
-        print(f"[WARN] mask is empty, skip save: {output_path}")
-        return
+        return np.full_like(image_bgr, 255, dtype=np.uint8)
+
     mask_uint8 = (mask.astype(np.uint8)) * 255
-    # crop to bbox of mask with small pad
     ys, xs = np.where(mask_uint8 > 0)
     y0, y1 = ys.min(), ys.max()
     x0, x1 = xs.min(), xs.max()
@@ -230,31 +233,26 @@ def save_with_white_bg(image_bgr: np.ndarray, mask: np.ndarray, output_path: str
     img_crop = image_bgr[y0 : y1 + 1, x0 : x1 + 1]
     mask_crop = mask_uint8[y0 : y1 + 1, x0 : x1 + 1]
 
-    h, w = mask_crop.shape
-    target = 512
-    canvas = np.full((target, target, 3), 255, dtype=np.uint8)
-    mask_canvas = np.zeros((target, target), dtype=np.uint8)
+    fg = cv2.bitwise_and(img_crop, img_crop, mask=mask_crop)
+    white = np.full_like(img_crop, 255, dtype=np.uint8)
+    bg = cv2.bitwise_and(white, white, mask=cv2.bitwise_not(mask_crop))
+    return cv2.add(fg, bg)
 
-    # center placement without upscaling; only downscale if larger than target
-    scale = min(1.0, target / max(h, w)) if max(h, w) > 0 else 1.0
-    if scale < 1.0:
-        new_w = max(1, int(w * scale))
-        new_h = max(1, int(h * scale))
-        img_crop = cv2.resize(img_crop, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        mask_crop = cv2.resize(mask_crop, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
-        h, w = new_h, new_w
 
-    y_off = (target - h) // 2
-    x_off = (target - w) // 2
-    canvas[y_off : y_off + h, x_off : x_off + w] = img_crop
-    mask_canvas[y_off : y_off + h, x_off : x_off + w] = mask_crop
+def encode_bgr_to_base64(img_bgr: np.ndarray, ext: str = ".jpg") -> str:
+    ok, buf = cv2.imencode(ext, img_bgr)
+    if not ok:
+        return ""
+    return base64.b64encode(buf.tobytes()).decode("utf-8")
 
-    fg = cv2.bitwise_and(canvas, canvas, mask=mask_canvas)
-    white = np.full_like(canvas, 255, dtype=np.uint8)
-    bg = cv2.bitwise_and(white, white, mask=cv2.bitwise_not(mask_canvas))
-    out = cv2.add(fg, bg)
+
+def save_with_white_bg(image_bgr: np.ndarray, mask: np.ndarray, output_path: str):
+    out = render_white_bg(image_bgr, mask)
+    if out is None or out.size == 0:
+        logger.warning(f"mask is empty, skip save: {output_path}")
+        return
     cv2.imwrite(output_path, out)
-    print(f"[INFO] saved: {output_path}")
+    logger.info(f"saved: {output_path}")
 
 
 def save_debug_overlay(image_bgr: np.ndarray, mask: np.ndarray, output_path: str, color: Tuple[int, int, int], title: str):
@@ -274,14 +272,13 @@ def save_debug_overlay(image_bgr: np.ndarray, mask: np.ndarray, output_path: str
 # -----------------------------
 def process_image(
     image_path: str,
-    output_dir: str,
     processor: AutoProcessor,
     dino_model: AutoModelForZeroShotObjectDetection,
     sam2_predictor: SAM2ImagePredictor,
     device: torch.device,
     box_threshold: float,
     text_threshold: float,
-):
+) -> Dict[str, str]:
     image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if image_bgr is None:
         print(f"[WARN] cannot read image: {image_path}")
@@ -289,11 +286,6 @@ def process_image(
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     image_pil = Image.fromarray(image_rgb)
     base = os.path.splitext(os.path.basename(image_path))[0]
-
-    img_out_dir = os.path.join(output_dir, base)
-    debug_dir = os.path.join(output_dir, "debug", base)
-    os.makedirs(img_out_dir, exist_ok=True)
-    os.makedirs(debug_dir, exist_ok=True)
 
     masks: Dict[str, np.ndarray] = {}
 
@@ -311,30 +303,31 @@ def process_image(
         masks[key] = mask_from_boxes(image_rgb, boxes, sam2_predictor)
 
     # 1) shoes
-    print("[STEP] detecting shoes ...")
+    logger.info("[STEP] detecting shoes ...")
     detect_and_store("shoes", FOOTWEAR_PROMPTS)
-    save_debug_overlay(image_bgr, masks["shoes"], os.path.join(debug_dir, "step1_shoes.jpg"), (255, 0, 255), "shoes")
 
     # 2) lower
-    print("[STEP] detecting lower ...")
+    logger.info("[STEP] detecting lower ...")
     detect_and_store("lower_raw", LOWER_PROMPTS)
     lower_mask = masks.get("lower_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
     masks["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
-    save_debug_overlay(image_bgr, masks["lower"], os.path.join(debug_dir, "step2_lower.jpg"), (255, 255, 0), "lower")
+    if save_files:
+    # no file saving in pipeline
 
     # 3) head (remove only)
-    print("[STEP] detecting head (for removal) ...")
+    logger.info("[STEP] detecting head (for removal) ...")
     detect_and_store("head", HEADWEAR_PROMPTS)
     head_mask = masks.get("head", np.zeros(image_rgb.shape[:2], dtype=bool))
     if np.any(head_mask):
         kernel = np.ones((15, 15), np.uint8)
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["head"] = head_mask
-    save_debug_overlay(image_bgr, head_mask, os.path.join(debug_dir, "step3_head.jpg"), (0, 165, 255), "head (remove)")
+    if save_files:
+    # no file saving in pipeline
 
     # 4) upper
-    print("[STEP] detecting upper ...")
+    logger.info("[STEP] detecting upper ...")
     detect_and_store("upper_raw", UPPER_PROMPTS)
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     upper_mask = (
@@ -346,10 +339,11 @@ def process_image(
     upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
-    save_debug_overlay(image_bgr, upper_mask, os.path.join(debug_dir, "step4_upper.jpg"), (0, 255, 0), "upper")
+    if save_files:
+    # no file saving in pipeline
 
     # 5) hands removal from upper
-    print("[STEP] detecting hands (remove from upper)...")
+    logger.info("[STEP] detecting hands (remove from upper)...")
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = remove_small_components(hand_mask, min_area_ratio=0.0005)
@@ -357,13 +351,12 @@ def process_image(
         kernel = np.ones((5, 5), np.uint8)
         hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["hands"] = hand_mask
-    save_debug_overlay(image_bgr, hand_mask, os.path.join(debug_dir, "step5_hands.jpg"), (0, 0, 255), "hands (remove)")
 
     masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
     masks["upper"] = remove_small_components(masks["upper"], min_area_ratio=0.001)
-    save_debug_overlay(image_bgr, masks["upper"], os.path.join(debug_dir, "step6_upper_nohands.jpg"), (0, 200, 0), "upper - hands")
 
-    # Save final outputs
+    # Build results as base64
+    results: Dict[str, str] = {}
     outputs = [
         ("upper", "upper"),
         ("lower", "lower"),
@@ -372,8 +365,10 @@ def process_image(
         ("hands", "hands"),
     ]
     for key, name in outputs:
-        out_path = os.path.join(img_out_dir, f"{name}.jpg")
-        save_with_white_bg(image_bgr, masks.get(key, np.zeros(image_rgb.shape[:2], dtype=bool)), out_path)
+        mask_part = masks.get(key, np.zeros(image_rgb.shape[:2], dtype=bool))
+        out_img = render_white_bg(image_bgr, mask_part)
+        results[name] = encode_bgr_to_base64(out_img, ext=".jpg")
+    return results
 
 
 def run_batch(
@@ -382,30 +377,25 @@ def run_batch(
     dino_model_name: str = "IDEA-Research/grounding-dino-base",
     box_threshold: float = 0.3,
     text_threshold: float = 0.25,
-):
-    # clean outputs each run
-    if os.path.exists(output_dir):
-        shutil.rmtree(output_dir)
-    os.makedirs(output_dir, exist_ok=True)
-
+) -> List[Dict[str, str]]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[INFO] device: {device}")
-    print("[INFO] loading models ...")
+    logger.info(f"device: {device}")
+    logger.info("loading models ...")
     processor, dino_model, sam2_predictor = load_models(dino_model_name, device)
-    print("[INFO] models loaded.")
+    logger.info("models loaded.")
 
     images = [
         os.path.join(input_dir, f)
         for f in os.listdir(input_dir)
         if f.lower().endswith((".jpg", ".jpeg", ".png"))
     ]
-    print(f"[INFO] found {len(images)} images.")
+    logger.info(f"found {len(images)} images.")
 
+    results_all: List[Dict[str, str]] = []
     for img in images:
-        print(f"\n[INFO] processing {os.path.basename(img)}")
-        process_image(
+        logger.info(f"processing {os.path.basename(img)}")
+        res = process_image(
             image_path=img,
-            output_dir=output_dir,
             processor=processor,
             dino_model=dino_model,
             sam2_predictor=sam2_predictor,
@@ -413,7 +403,9 @@ def run_batch(
             box_threshold=box_threshold,
             text_threshold=text_threshold,
         )
+        results_all.append(res)
 
-    print("\n[INFO] done.")
+    logger.info("done.")
+    return results_all
 
 
