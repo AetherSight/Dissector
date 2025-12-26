@@ -304,18 +304,18 @@ def process_image(
         masks[key] = mask_from_boxes(image_rgb, boxes, sam2_predictor)
 
     # 1) shoes
-    logger.info("[STEP] detecting shoes ...")
+    logger.debug("[STEP] detecting shoes ...")
     detect_and_store("shoes", FOOTWEAR_PROMPTS)
 
     # 2) lower
-    logger.info("[STEP] detecting lower ...")
+    logger.debug("[STEP] detecting lower ...")
     detect_and_store("lower_raw", LOWER_PROMPTS)
     lower_mask = masks.get("lower_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
     masks["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
 
     # 3) head (remove only)
-    logger.info("[STEP] detecting head (for removal) ...")
+    logger.debug("[STEP] detecting head (for removal) ...")
     detect_and_store("head", HEADWEAR_PROMPTS)
     head_mask = masks.get("head", np.zeros(image_rgb.shape[:2], dtype=bool))
     if np.any(head_mask):
@@ -324,7 +324,7 @@ def process_image(
     masks["head"] = head_mask
 
     # 4) upper
-    logger.info("[STEP] detecting upper ...")
+    logger.debug("[STEP] detecting upper ...")
     detect_and_store("upper_raw", UPPER_PROMPTS)
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     upper_mask = (
@@ -338,7 +338,7 @@ def process_image(
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
     # 5) hands removal from upper
-    logger.info("[STEP] detecting hands (remove from upper)...")
+    logger.debug("[STEP] detecting hands (remove from upper)...")
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = remove_small_components(hand_mask, min_area_ratio=0.0005)
@@ -399,6 +399,7 @@ def run_batch(
             text_threshold=text_threshold,
         )
         results_all.append(res)
+        logger.info(f"done {os.path.basename(img)}")
 
     # end
     return results_all
