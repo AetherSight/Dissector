@@ -1,53 +1,25 @@
-# ffxiv-gear-slicer (Head / Upper / Lower / Shoes / Hands)
+# ffxiv-gear-slicer
 
-面向后续 web 子模块使用的分割包，提供批处理 CLI 与可复用的 Python 接口。
+FFXIV 穿搭分割（头/上衣/下衣/鞋/手），批处理 CLI，可嵌入后续 web 子模块。
 
-## 目录结构
-```
-ffxiv_seg/
-  ├─ pipeline.py   # 核心分割流程
-  ├─ cli.py        # 命令行入口（推荐使用）
-  └─ __init__.py
-models/
-  ├─ sam2.1_hiera_base_plus.pt
-  └─ sam2_configs/           # Hydra 配置目录（包含 sam2.1_hiera_b+.yaml 等）
-data/
-  ├─ images/                # 输入图片目录（默认）
-  └─ outputs/               # 输出目录（运行前自动清空）
-```
-
-## 依赖
-- Python 3.10+
-- `torch`, `transformers`, `opencv-python`, `Pillow`, `hydra-core`, `sam2`（需安装与你的 SAM2 代码/权重匹配的版本）
-
-## 模型文件
-将 SAM2 权重与配置放在项目根的 `models/` 下：
-- 权重：`models/sam2.1_hiera_base_plus.pt`
-- 配置：`models/sam2_configs/` 目录下的 `sam2.1_hiera_b+.yaml`（Hydra 配置名仍为 `sam2.1_hiera_b+`）
-
-## 运行方式（推荐）
-使用包入口：
+## 快速使用
 ```
 python -m ffxiv_seg.cli \
   --box-threshold 0.3 \
   --text-threshold 0.25 \
-  --input-dir /path/to/images \   # 默认 data/images
-  --output-dir /path/to/outputs   # 默认 data/outputs
+  --input-dir data/images \
+  --output-dir data/outputs
 ```
-说明：
-- 不指定 input/output 时，默认 `data/images` 与 `data/outputs`。
-- 每次运行前会自动清空 `outputs/`。
-- 阈值可按需要调整（提高阈值=更严格，降低=更宽松）。
+提示：不传入路径时默认使用 `data/images` 作为输入，`data/outputs` 作为输出（运行前会自动清空输出目录）。阈值可按需要调整（高=更严格，低=更宽松）。
+
+## 输入
+- 放置待处理图片到 `data/images/`，支持 jpg/png。
 
 ## 输出
-- 最终结果：`data/outputs/<图片文件名>/upper.jpg`, `lower.jpg`, `shoes.jpg`, `head.jpg`（head 仅供参考）, `hands.jpg`，白底。
-- 调试可视化：`data/outputs/debug/<图片文件名>/step*.jpg`
+- 结果：`data/outputs/<图片名>/upper.jpg`, `lower.jpg`, `shoes.jpg`, `head.jpg`（参考）, `hands.jpg`；白底。
+- 调试：`data/outputs/debug/<图片名>/step*.jpg`
 
-## 当前分割逻辑（pipeline）
-1. 检测鞋（shoes）
-2. 检测下衣（lower，扣除鞋）
-3. 检测头（head，用于上衣扣头，不保存）
-4. 检测上衣（upper，扣除下衣/鞋/头）
-5. 检测手（hands），从上衣中扣除手部，保留手臂
-6. 小连通域清理，输出白底图
+## 依赖
+- Python 3.10+
+- torch, transformers, opencv-python, Pillow, hydra-core, sam2（按项目已固定的版本即可）
 
