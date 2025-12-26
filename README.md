@@ -1,4 +1,4 @@
-# FFXIV Gear Segmentation (Head / Upper / Lower / Shoes)
+# ffxiv-gear-slicer (Head / Upper / Lower / Shoes / Hands)
 
 面向后续 web 子模块使用的分割包，提供批处理 CLI 与可复用的 Python 接口。
 
@@ -8,7 +8,6 @@ ffxiv_seg/
   ├─ pipeline.py   # 核心分割流程
   ├─ cli.py        # 命令行入口（推荐使用）
   └─ __init__.py
-ffxiv_gear_seg_rebuild.py  # 旧入口（将被替换），暂保留
 models/
   ├─ sam2.1_hiera_base_plus.pt
   └─ sam2_configs/           # Hydra 配置目录（包含 sam2.1_hiera_b+.yaml 等）
@@ -50,8 +49,5 @@ python -m ffxiv_seg.cli \
 3. 检测头（head，用于上衣扣头，不保存）
 4. 检测上衣（upper，扣除下衣/鞋/头）
 5. 检测手（hands），从上衣中扣除手部，保留手臂
-6. 小连通域清理、闭运算，输出白底裁剪图
-
-## 旧入口
-`ffxiv_gear_seg_rebuild.py` 仍在，但建议改用 `python -m ffxiv_seg.cli`。确认无依赖后可删除该旧文件。
+6. 小连通域清理，输出白底图
 
