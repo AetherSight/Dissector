@@ -1,6 +1,7 @@
 import os
 import base64
 import logging
+import platform
 from typing import Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,19 @@ from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 from sam3.model_builder import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
+
+
+def get_device() -> torch.device:
+    """
+    Get the best available device for PyTorch.
+    Priority: CUDA > MPS (Apple Silicon) > CPU
+    """
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
 
 HEADWEAR_PROMPTS: List[str] = [
     "head",
@@ -402,8 +416,8 @@ def run_batch(
     box_threshold: float = 0.3,
     text_threshold: float = 0.25,
 ) -> List[Dict[str, str]]:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"device: {device}")
+    device = get_device()
+    logger.info(f"device: {device} (platform: {platform.system()})")
     logger.info("loading models ...")
     processor, dino_model, sam3_processor = load_models(dino_model_name, device)
     logger.info("models loaded.")

@@ -41,22 +41,37 @@ curl -X POST "http://localhost:8000/segment?box_threshold=0.3&text_threshold=0.2
 
 ## Docker 部署
 
-### 构建镜像
+### Linux/Windows (CUDA 支持)
 
 ```bash
+# 构建镜像
 docker build -t dissector:latest .
-```
 
-### 运行容器
-
-```bash
-# 挂载模型文件
+# 运行容器
 docker run -d \
   -p 8000:8000 \
   -v /path/to/models:/models:ro \
   -e SAM3_MODEL_PATH=/models/sam3.pt \
   dissector:latest
 ```
+
+### Mac (Apple Silicon)
+
+Mac 上建议使用原生运行以获得 MPS 加速（见下方说明）。如需使用 Docker：
+
+```bash
+# 构建 ARM64 镜像
+docker build -f Dockerfile.mac -t dissector:mac .
+
+# 运行容器
+docker run -d \
+  -p 8000:8000 \
+  -v /path/to/models:/models:ro \
+  -e SAM3_MODEL_PATH=/models/sam3.pt \
+  dissector:mac
+```
+
+**注意**: Docker 在 Mac 上可能无法使用 MPS 加速，建议参考 [README.mac.md](README.mac.md) 使用原生运行方式。
 
 ## Kubernetes 部署
 
@@ -96,10 +111,16 @@ kubectl logs -f deployment/dissector
 ## 依赖
 
 - Python 3.12+
-- PyTorch 2.7.0 (CUDA 12.6)
+- PyTorch 2.7.0
+  - Linux/Windows: CUDA 12.6 支持
+  - Mac: MPS (Metal) 支持（Apple Silicon）
 - SAM3 >= 0.1.2
 - FastAPI (API 模式)
 - 其他依赖见 `pyproject.toml`
+
+## Mac 用户
+
+Mac 用户请参考 [README.mac.md](README.mac.md) 获取详细的安装和运行指南，包括 MPS 加速配置。
 
 ## 模型文件
 

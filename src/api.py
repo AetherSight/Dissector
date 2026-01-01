@@ -10,7 +10,7 @@ import torch
 from PIL import Image
 import io
 
-from .pipeline import load_models, process_image
+from .pipeline import load_models, process_image, get_device
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -29,7 +29,7 @@ async def load_models_on_startup():
     """Load models when the service starts."""
     global processor, dino_model, sam3_processor, device
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     logger.info(f"Loading models on device: {device}")
     
     try:
