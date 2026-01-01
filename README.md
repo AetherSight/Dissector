@@ -1,6 +1,6 @@
 # Dissector
 
-Dissector - FFXIV 穿搭分割（头/上衣/下衣/鞋/手），支持批处理 CLI 和 HTTP API 微服务。
+FFXIV 装备分割微服务，支持分割头部、上衣、下衣、鞋子和手部。
 
 ## 功能特性
 
