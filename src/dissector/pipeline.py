@@ -373,12 +373,27 @@ def process_image(
     logger.debug("[STEP] detecting upper ...")
     detect_and_store("upper_raw", UPPER_PROMPTS)
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
+    lower_mask_current = masks.get("lower", np.zeros_like(upper_mask))
+    
     upper_mask = (
         upper_mask
-        & (~masks.get("lower", np.zeros_like(upper_mask)))
         & (~masks.get("shoes", np.zeros_like(upper_mask)))
         & (~masks.get("head", np.zeros_like(upper_mask)))
     )
+    
+    if np.any(upper_mask) and np.any(lower_mask_current):
+        overlap = upper_mask & lower_mask_current
+        if np.any(overlap):
+            upper_area = np.sum(upper_mask)
+            overlap_area = np.sum(overlap)
+            overlap_ratio = overlap_area / max(upper_area, 1)
+            
+            if overlap_ratio > 0.1:
+                upper_mask = upper_mask | overlap
+                lower_mask_current = lower_mask_current & (~overlap)
+                masks["lower"] = lower_mask_current
+    
+    upper_mask = upper_mask & (~lower_mask_current)
     upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
@@ -387,6 +402,16 @@ def process_image(
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = remove_small_components(hand_mask, min_area_ratio=0.0005)
+    
+    if np.any(hand_mask) and np.any(masks.get("lower", np.zeros_like(hand_mask))):
+        lower_mask = masks.get("lower", np.zeros_like(hand_mask))
+        overlap = hand_mask & lower_mask
+        if np.any(overlap):
+            overlap_ratio = np.sum(overlap) / max(np.sum(hand_mask), 1)
+            if overlap_ratio > 0.5:
+                logger.debug(f"Hand mask mostly overlaps with lower ({overlap_ratio:.2%}), excluding overlap")
+                hand_mask = hand_mask & (~overlap)
+    
     if np.any(hand_mask):
         kernel = np.ones((5, 5), np.uint8)
         hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
