@@ -1,69 +1,53 @@
 # Dissector
 
-FFXIV 幻化装备分割微服务，支持分割头部、上衣、下衣、鞋子和手部。
+FFXIV glamour gear segmentation microservice. Segments head, upper, lower, shoes, and hands from character images.
 
-## 功能特性
+## Overview
 
-- 使用 SAM3 和 Grounding DINO 进行高精度装备分割
-- 支持批量处理图片
-- 提供 HTTP API 接口，可作为微服务部署
-- 支持 Kubernetes 部署
-- 支持 GPU 加速
+Dissector uses SAM3 and Grounding DINO for high-precision gear segmentation. Provides HTTP API for microservice deployment.
 
-## 快速使用
-
-### CLI 模式
+## Development
 
 ```bash
-python -m src.cli \
-  --box-threshold 0.3 \
-  --text-threshold 0.25 \
-  --input-dir data/images \
-  --output-dir data/outputs
+# Install dependencies
+poetry install
+
+# Run CLI
+poetry run python -m src.cli --input-dir data/images --output-dir data/outputs
+
+# Run API service
+poetry run python -m src.api
 ```
 
-提示：不传入路径时默认使用 `data/images` 作为输入，`data/outputs` 作为输出（运行前会自动清空输出目录）。阈值可按需要调整（高=更严格，低=更宽松）。
+## Build
 
-### API 模式
-
-```bash
-# 启动 API 服务
-python -m src.api
-
-# 健康检查
-curl http://localhost:8000/health
-
-# 分割图片
-curl -X POST "http://localhost:8000/segment?box_threshold=0.3&text_threshold=0.25" \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@your_image.jpg"
-```
-
-## Docker 部署
-
-### Linux/Windows (CUDA 支持)
+### Linux/Windows (CUDA)
 
 ```bash
-# 构建镜像
 docker build -t dissector:latest .
+```
 
-# 运行容器
+### Mac (Apple Silicon)
+
+```bash
+docker build -f Dockerfile.mac -t dissector:mac .
+```
+
+**Note**: For best performance on Mac, run natively to utilize MPS acceleration. Docker on Mac may not support MPS.
+
+## Deployment
+
+### Docker
+
+```bash
+# Linux/Windows
 docker run -d \
   -p 8000:8000 \
   -v /path/to/models:/models:ro \
   -e SAM3_MODEL_PATH=/models/sam3.pt \
   dissector:latest
-```
 
-### Mac (Apple Silicon)
-
-Mac 上建议使用原生运行以获得 MPS 加速（见下方说明）。如需使用 Docker：
-
-```bash
-# 构建 ARM64 镜像
-docker build -f Dockerfile.mac -t dissector:mac .
-
-# 运行容器
+# Mac
 docker run -d \
   -p 8000:8000 \
   -v /path/to/models:/models:ro \
@@ -71,75 +55,36 @@ docker run -d \
   dissector:mac
 ```
 
-**注意**: Docker 在 Mac 上可能无法使用 MPS 加速，建议参考 [README.mac.md](README.mac.md) 使用原生运行方式。
-
-## Kubernetes 部署
-
-详细部署说明请参考 [k8s/README.md](k8s/README.md)
-
-### 快速部署
+### Kubernetes
 
 ```bash
-# 1. 创建 PVC（用于挂载模型）
 kubectl apply -f k8s/pvc.yaml
-
-# 2. 将模型文件复制到 PVC（参考 k8s/README.md）
-
-# 3. 部署服务
 kubectl apply -f k8s/deployment.yaml
-
-# 4. 检查状态
-kubectl get pods -l app=dissector
-kubectl logs -f deployment/dissector
 ```
 
-## 输入输出
+See `k8s/README.md` for detailed deployment instructions.
 
-### 输入
-- 支持格式：JPG, PNG
-- CLI 模式：放置图片到 `data/images/`
-- API 模式：通过 HTTP POST 上传图片
+### Mac Native (Recommended for Mac)
 
-### 输出
-- `upper.jpg` - 上衣
-- `lower.jpg` - 下衣
-- `shoes.jpg` - 鞋子
-- `head.jpg` - 头部（参考）
-- `hands.jpg` - 手部
-- 所有输出均为白底图片
+For optimal performance on Apple Silicon, run natively:
 
-## 依赖
+```bash
+poetry install
+poetry run python -m src.api
+```
+
+The service automatically detects and uses MPS acceleration if available.
+
+## API
+
+- `GET /health` - Health check
+- `POST /segment` - Segment image (multipart/form-data)
+  - Query params: `box_threshold` (default: 0.3), `text_threshold` (default: 0.25)
+  - Returns: JSON with base64-encoded images (upper, lower, shoes, head, hands)
+
+## Requirements
 
 - Python 3.12+
 - PyTorch 2.7.0
-  - Linux/Windows: CUDA 12.6 支持
-  - Mac: MPS (Metal) 支持（Apple Silicon）
 - SAM3 >= 0.1.2
-- FastAPI (API 模式)
-- 其他依赖见 `pyproject.toml`
-
-## Mac 用户
-
-Mac 用户请参考 [README.mac.md](README.mac.md) 获取详细的安装和运行指南，包括 MPS 加速配置。
-
-## 模型文件
-
-模型文件需要单独准备：
-- SAM3 模型：`models/sam3.pt` 或通过挂载卷提供
-- BPE 词汇表：`assets/bpe_simple_vocab_16e6.txt.gz`（已包含）
-
-在 Kubernetes 部署中，模型文件通过 PVC 挂载到 `/models` 目录。
-
-## 开发
-
-```bash
-# 安装依赖
-poetry install
-
-# 运行测试
-poetry run python -m src.cli
-```
-
-## License
-
-See LICENSE file for details.
+- FastAPI
