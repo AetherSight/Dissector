@@ -75,6 +75,9 @@ UPPER_PROMPTS: List[str] = [
     "bracer",
     "arm band",
     "arm accessory",
+    "belt",
+    "waistband",
+    "waist belt",
     "garment body",
     "clothing fabric",
     "inner lining",
@@ -90,7 +93,6 @@ LOWER_PROMPTS: List[str] = [
     "tights",
     "pant legs",
     "trouser legs",
-    "pant waist",
 ]
 
 FOOTWEAR_PROMPTS: List[str] = [
