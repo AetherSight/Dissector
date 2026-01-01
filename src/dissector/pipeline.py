@@ -107,22 +107,10 @@ FOOTWEAR_PROMPTS: List[str] = [
 HAND_PROMPTS: List[str] = [
     "human hand",
     "hands",
-    "hand",
-    "left hand",
-    "right hand",
     "palm",
-    "palms",
     "fingers",
-    "finger",
-    "thumb",
-    "wrist",
     "bare hand",
     "bare fingers",
-    "gloved hand",
-    "hand gesture",
-    "hand pose",
-    "forearm",
-    "lower arm",
 ]
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -382,35 +370,29 @@ def process_image(
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["head"] = head_mask
 
-    logger.debug("[STEP] detecting hands (before upper, to exclude from upper)...")
-    detect_and_store("hands", HAND_PROMPTS)
-    hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
-    hand_mask = remove_small_components(hand_mask, min_area_ratio=0.0005)
-    if np.any(hand_mask):
-        # 使用更大的kernel和更多迭代次数来膨胀手部mask，确保覆盖更多区域
-        kernel = np.ones((7, 7), np.uint8)
-        hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=2).astype(bool)
-        # 再次进行形态学闭运算，填充小孔洞
-        hand_mask = cv2.morphologyEx(hand_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel, iterations=1).astype(bool)
-    masks["hands"] = hand_mask
-
     logger.debug("[STEP] detecting upper ...")
     detect_and_store("upper_raw", UPPER_PROMPTS)
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
-    # 在检测upper时就排除hands，避免手部被包含在upper中
     upper_mask = (
         upper_mask
         & (~masks.get("lower", np.zeros_like(upper_mask)))
         & (~masks.get("shoes", np.zeros_like(upper_mask)))
         & (~masks.get("head", np.zeros_like(upper_mask)))
-        & (~masks.get("hands", np.zeros_like(upper_mask)))
     )
     upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
-    
-    # 再次确保从upper中排除hands（双重保险）
-    masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~masks.get("hands", np.zeros_like(hand_mask)))
+
+    logger.debug("[STEP] detecting hands (remove from upper)...")
+    detect_and_store("hands", HAND_PROMPTS)
+    hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
+    hand_mask = remove_small_components(hand_mask, min_area_ratio=0.0005)
+    if np.any(hand_mask):
+        kernel = np.ones((5, 5), np.uint8)
+        hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+    masks["hands"] = hand_mask
+
+    masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
     masks["upper"] = remove_small_components(masks["upper"], min_area_ratio=0.001)
     results: Dict[str, str] = {}
     outputs = [
