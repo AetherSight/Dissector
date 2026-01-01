@@ -33,3 +33,6 @@ priority = "explicit"
 [tool.poetry.dependencies]
 torch = {source = "pytorch-cu126"}
 torchvision = {source = "pytorch-cu126"}
+
+[tool.poetry]
+packages = [{include = "dissector", from = "src"}]

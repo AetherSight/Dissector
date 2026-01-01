@@ -14,11 +14,8 @@ Dissector uses SAM3 and Grounding DINO for high-precision gear segmentation. Pro
 # Install dependencies
 poetry install
 
-# Run CLI
-poetry run python -m src.cli --input-dir data/images --output-dir data/outputs
-
 # Run API service
-poetry run python -m src.api
+poetry run python -m dissector
 ```
 
 ### Mac (Apple Silicon)
@@ -30,57 +27,27 @@ pip install torch==2.7.0 torchvision==0.22.0
 # Install dependencies
 poetry install --no-interaction
 
-# Run CLI
-poetry run python -m src.cli --input-dir data/images --output-dir data/outputs
-
 # Run API service
-poetry run python -m src.api
+poetry run python -m dissector
 ```
 
 ## Build
 
-### Linux/Windows (CUDA)
-
 ```bash
 docker build -t dissector:latest .
 ```
-
-### Mac (Apple Silicon)
-
-```bash
-docker build -f Dockerfile.mac -t dissector:mac .
-```
-
-**Note**: For best performance on Mac, run natively to utilize MPS acceleration. Docker on Mac may not support MPS.
 
 ## Deployment
 
 ### Docker
 
 ```bash
-# Linux/Windows
 docker run -d \
   -p 8000:8000 \
   -v /path/to/models:/models:ro \
   -e SAM3_MODEL_PATH=/models/sam3.pt \
   dissector:latest
-
-# Mac
-docker run -d \
-  -p 8000:8000 \
-  -v /path/to/models:/models:ro \
-  -e SAM3_MODEL_PATH=/models/sam3.pt \
-  dissector:mac
 ```
-
-### Kubernetes
-
-```bash
-kubectl apply -f k8s/pvc.yaml
-kubectl apply -f k8s/deployment.yaml
-```
-
-See `k8s/README.md` for detailed deployment instructions.
 
 ### Mac Native (Recommended for Mac)
 
@@ -88,7 +55,7 @@ For optimal performance on Apple Silicon, run natively:
 
 ```bash
 poetry install
-poetry run python -m src.api
+poetry run python -m dissector
 ```
 
 The service automatically detects and uses MPS acceleration if available.

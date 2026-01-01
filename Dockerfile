@@ -35,9 +35,9 @@ RUN mkdir -p /models
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
-# Expose port (if API service is added)
+# Expose port
 EXPOSE 8000
 
-# Default command: run API service (can be overridden in k8s deployment)
-CMD ["python", "-m", "src.api"]
+# Default command: run API service
+CMD ["python", "-m", "dissector"]
 
