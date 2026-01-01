@@ -8,7 +8,7 @@ from .pipeline import run_batch
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    parser = argparse.ArgumentParser(description="FFXIV gear segmentation (head/upper/lower/shoes)")
+    parser = argparse.ArgumentParser(description="Dissector - FFXIV gear segmentation (head/upper/lower/shoes)")
     parser.add_argument("--dino-model-name", type=str, default="IDEA-Research/grounding-dino-base")
     parser.add_argument("--box-threshold", type=float, default=0.3)
     parser.add_argument("--text-threshold", type=float, default=0.25)

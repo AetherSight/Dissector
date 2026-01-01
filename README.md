@@ -1,6 +1,6 @@
-# ffxiv-gear-slicer
+# Dissector
 
-FFXIV 穿搭分割（头/上衣/下衣/鞋/手），批处理 CLI，可嵌入后续 web 子模块。
+Dissector - FFXIV 穿搭分割（头/上衣/下衣/鞋/手），批处理 CLI，可嵌入后续 web 子模块。
 
 ## 快速使用
 ```
@@ -21,5 +21,5 @@ python -m ffxiv_seg.cli \
 
 ## 依赖
 - Python 3.10+
-- torch, transformers, opencv-python, Pillow, hydra-core, sam2（按项目已固定的版本即可）
+- torch, transformers, opencv-python, Pillow, hydra-core, sam3（按项目已固定的版本即可）
 

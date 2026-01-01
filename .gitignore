@@ -4,3 +4,4 @@ outputs
 __pycache__
 .DS_Store
 !.gitkeep
+*.pt

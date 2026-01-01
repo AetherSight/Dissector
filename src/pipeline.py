@@ -3,9 +3,7 @@ import base64
 import logging
 from typing import Dict, List, Tuple
 
-# Logger
 logger = logging.getLogger(__name__)
-# Suppress noisy info logs from transformers about numpy image layout
 logging.getLogger("transformers.image_utils").setLevel(logging.WARNING)
 logging.getLogger("transformers.image_processing_utils").setLevel(logging.WARNING)
 
@@ -15,21 +13,9 @@ import torch
 from PIL import Image
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
-import hydra
-from sam2.build_sam import build_sam2
-from sam2.sam2_image_predictor import SAM2ImagePredictor
+from sam3.model_builder import build_sam3_image_model
+from sam3.model.sam3_image_processor import Sam3Processor
 
-# -----------------------------
-# Model paths (fixed)
-# -----------------------------
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SAM2_CONFIG_NAME = "sam2.1_hiera_b+"
-SAM2_CONFIG_DIR = os.path.join(PROJECT_ROOT, "models", "sam2_configs")
-SAM2_CHECKPOINT_PATH = os.path.join(PROJECT_ROOT, "models", "sam2.1_hiera_base_plus.pt")
-
-# -----------------------------
-# Prompts
-# -----------------------------
 HEADWEAR_PROMPTS: List[str] = [
     "head",
     "human head",
@@ -113,29 +99,25 @@ HAND_PROMPTS: List[str] = [
     "bare fingers",
 ]
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BPE_PATH = os.path.join(PROJECT_ROOT, "assets", "bpe_simple_vocab_16e6.txt.gz")
+SAM3_CHECKPOINT_PATH = os.path.join(PROJECT_ROOT, "models", "sam3.pt")
 
-# -----------------------------
-# Model loading
-# -----------------------------
-def load_models(dino_model_name: str, device: torch.device) -> Tuple[AutoProcessor, AutoModelForZeroShotObjectDetection, SAM2ImagePredictor]:
+def load_models(dino_model_name: str, device: torch.device) -> Tuple[AutoProcessor, AutoModelForZeroShotObjectDetection, Sam3Processor]:
     processor = AutoProcessor.from_pretrained(dino_model_name)
     dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(dino_model_name).to(device)
 
-    hydra.core.global_hydra.GlobalHydra.instance().clear()
-    hydra.initialize_config_dir(config_dir=SAM2_CONFIG_DIR, version_base="2.1")
-
-    sam2_model = build_sam2(
-        SAM2_CONFIG_NAME,
-        SAM2_CHECKPOINT_PATH,
+    sam3_model = build_sam3_image_model(
+        bpe_path=BPE_PATH,
         device=device,
+        checkpoint_path=SAM3_CHECKPOINT_PATH,
+        load_from_HF=False,
     )
-    sam2_predictor = SAM2ImagePredictor(sam2_model)
-    return processor, dino_model, sam2_predictor
+    sam3_model = sam3_model.to(device)
+    sam3_processor = Sam3Processor(sam3_model)
+    return processor, dino_model, sam3_processor
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
 def run_grounding_dino(
     image_pil: Image.Image,
     prompts: List[str],
@@ -198,20 +180,71 @@ def remove_small_components(mask: np.ndarray, min_area_ratio: float = 0.001) -> 
 
 
 def mask_from_boxes(
-    image_rgb: np.ndarray,
+    image_pil: Image.Image,
     boxes: np.ndarray,
-    sam2_predictor: SAM2ImagePredictor,
+    sam3_processor: Sam3Processor,
     min_area_ratio: float = 0.001,
 ) -> np.ndarray:
     if boxes.size == 0:
-        return np.zeros(image_rgb.shape[:2], dtype=bool)
+        h, w = image_pil.size[1], image_pil.size[0]
+        return np.zeros((h, w), dtype=bool)
 
-    sam2_predictor.set_image(image_rgb)
-    mask_total = np.zeros(image_rgb.shape[:2], dtype=bool)
+    inference_state = sam3_processor.set_image(image_pil)
+    mask_total = None
+    h, w = image_pil.size[1], image_pil.size[0]
+
     for box in boxes:
-        masks, _, _ = sam2_predictor.predict(box=box, multimask_output=False)
-        mask = masks[0] > 0
-        mask_total |= mask
+        sam3_processor.reset_all_prompts(inference_state)
+
+        x1, y1, x2, y2 = box
+        center_x = (x1 + x2) / 2.0 / w
+        center_y = (y1 + y2) / 2.0 / h
+        width = (x2 - x1) / w
+        height = (y2 - y1) / h
+        box_normalized = [center_x, center_y, width, height]
+
+        output = sam3_processor.add_geometric_prompt(
+            box=box_normalized,
+            label=True,
+            state=inference_state
+        )
+
+        masks = output.get("masks", None)
+        if masks is not None and masks.numel() > 0:
+            masks_np = masks.cpu().numpy()
+
+            if masks_np.ndim == 4:
+                masks_2d = masks_np.squeeze(1)
+                mask = np.any(masks_2d, axis=0).astype(bool)
+            elif masks_np.ndim == 3:
+                mask = np.any(masks_np, axis=0).astype(bool)
+            elif masks_np.ndim == 2:
+                mask = masks_np.astype(bool)
+            else:
+                mask = masks_np.squeeze()
+                if mask.ndim == 3:
+                    mask = np.any(mask, axis=0).astype(bool)
+                elif mask.ndim == 2:
+                    mask = mask.astype(bool)
+                else:
+                    logger.warning(f"Unexpected mask shape after squeeze: {mask.shape}, skipping...")
+                    continue
+
+            if mask.ndim != 2:
+                logger.warning(f"Mask is not 2D after processing: {mask.shape}, skipping...")
+                continue
+
+            if mask.shape != (h, w):
+                logger.warning(f"Mask shape {mask.shape} doesn't match image size ({h}, {w}), resizing...")
+                mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+
+            if mask_total is None:
+                mask_total = mask.copy()
+            else:
+                mask_total |= mask
+
+    if mask_total is None:
+        return np.zeros((h, w), dtype=bool)
 
     kernel = np.ones((3, 3), np.uint8)
     mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
@@ -220,7 +253,6 @@ def mask_from_boxes(
 
 
 def render_white_bg(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Return white-background image cropped to mask bbox (with small padding)."""
     if np.sum(mask) == 0:
         return np.full_like(image_bgr, 255, dtype=np.uint8)
 
@@ -271,14 +303,11 @@ def save_debug_overlay(image_bgr: np.ndarray, mask: np.ndarray, output_path: str
     cv2.imwrite(output_path, vis)
 
 
-# -----------------------------
-# Main processing
-# -----------------------------
 def process_image(
     image_path: str,
     processor: AutoProcessor,
     dino_model: AutoModelForZeroShotObjectDetection,
-    sam2_predictor: SAM2ImagePredictor,
+    sam3_processor: Sam3Processor,
     device: torch.device,
     box_threshold: float,
     text_threshold: float,
@@ -289,7 +318,7 @@ def process_image(
         return
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     image_pil = Image.fromarray(image_rgb)
-    base = os.path.splitext(os.path.basename(image_path))[0]
+    h, w = image_rgb.shape[:2]
 
     masks: Dict[str, np.ndarray] = {}
 
@@ -304,29 +333,25 @@ def process_image(
             text_threshold=text_threshold,
         )
         boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-        masks[key] = mask_from_boxes(image_rgb, boxes, sam2_predictor)
+        masks[key] = mask_from_boxes(image_pil, boxes, sam3_processor)
 
-    # 1) shoes
     logger.debug("[STEP] detecting shoes ...")
     detect_and_store("shoes", FOOTWEAR_PROMPTS)
 
-    # 2) lower
     logger.debug("[STEP] detecting lower ...")
     detect_and_store("lower_raw", LOWER_PROMPTS)
-    lower_mask = masks.get("lower_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
+    lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
     masks["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
 
-    # 3) head (remove only)
     logger.debug("[STEP] detecting head (for removal) ...")
     detect_and_store("head", HEADWEAR_PROMPTS)
-    head_mask = masks.get("head", np.zeros(image_rgb.shape[:2], dtype=bool))
+    head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
     if np.any(head_mask):
         kernel = np.ones((15, 15), np.uint8)
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["head"] = head_mask
 
-    # 4) upper
     logger.debug("[STEP] detecting upper ...")
     detect_and_store("upper_raw", UPPER_PROMPTS)
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
@@ -340,7 +365,6 @@ def process_image(
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
-    # 5) hands removal from upper
     logger.debug("[STEP] detecting hands (remove from upper)...")
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
@@ -352,8 +376,6 @@ def process_image(
 
     masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
     masks["upper"] = remove_small_components(masks["upper"], min_area_ratio=0.001)
-
-    # Build results as base64
     results: Dict[str, str] = {}
     outputs = [
         ("upper", "upper"),
@@ -363,7 +385,7 @@ def process_image(
         ("hands", "hands"),
     ]
     for key, name in outputs:
-        mask_part = masks.get(key, np.zeros(image_rgb.shape[:2], dtype=bool))
+        mask_part = masks.get(key, np.zeros((h, w), dtype=bool))
         out_img = render_white_bg(image_bgr, mask_part)
         results[name] = encode_bgr_to_base64(out_img, ext=".jpg")
     return results
@@ -379,7 +401,7 @@ def run_batch(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"device: {device}")
     logger.info("loading models ...")
-    processor, dino_model, sam2_predictor = load_models(dino_model_name, device)
+    processor, dino_model, sam3_processor = load_models(dino_model_name, device)
     logger.info("models loaded.")
 
     images = [
@@ -396,7 +418,7 @@ def run_batch(
             image_path=img,
             processor=processor,
             dino_model=dino_model,
-            sam2_predictor=sam2_predictor,
+            sam3_processor=sam3_processor,
             device=device,
             box_threshold=box_threshold,
             text_threshold=text_threshold,
@@ -404,7 +426,6 @@ def run_batch(
         results_all.append(res)
         logger.info(f"done {os.path.basename(img)}")
 
-    # end
     return results_all
 
 
