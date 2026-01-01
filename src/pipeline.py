@@ -101,7 +101,11 @@ HAND_PROMPTS: List[str] = [
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BPE_PATH = os.path.join(PROJECT_ROOT, "assets", "bpe_simple_vocab_16e6.txt.gz")
-SAM3_CHECKPOINT_PATH = os.path.join(PROJECT_ROOT, "models", "sam3.pt")
+# Model path: check /models (mounted volume) first, then fallback to local models/
+SAM3_CHECKPOINT_PATH = os.getenv("SAM3_MODEL_PATH") or (
+    "/models/sam3.pt" if os.path.exists("/models/sam3.pt") else
+    os.path.join(PROJECT_ROOT, "models", "sam3.pt")
+)
 
 def load_models(dino_model_name: str, device: torch.device) -> Tuple[AutoProcessor, AutoModelForZeroShotObjectDetection, Sam3Processor]:
     processor = AutoProcessor.from_pretrained(dino_model_name)

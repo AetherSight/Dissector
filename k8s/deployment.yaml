@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dissector
+  labels:
+    app: dissector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dissector
+  template:
+    metadata:
+      labels:
+        app: dissector
+    spec:
+      containers:
+      - name: dissector
+        image: dissector:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: SAM3_MODEL_PATH
+          value: "/models/sam3.pt"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        volumeMounts:
+        - name: models
+          mountPath: /models
+          readOnly: true
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2"
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: models
+        persistentVolumeClaim:
+          claimName: dissector-models
+      # Uncomment if using GPU
+      # nodeSelector:
+      #   accelerator: nvidia-tesla-v100
+      # tolerations:
+      # - key: nvidia.com/gpu
+      #   operator: Exists
+      #   effect: NoSchedule
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dissector
+  labels:
+    app: dissector
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: dissector
+
