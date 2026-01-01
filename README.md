@@ -8,24 +8,9 @@ Dissector uses SAM3 and Grounding DINO for high-precision gear segmentation. Pro
 
 ## Development
 
-### Linux/Windows (CUDA)
-
 ```bash
 # Install dependencies
 poetry install
-
-# Run API service
-poetry run python -m dissector
-```
-
-### Mac (Apple Silicon)
-
-```bash
-# Install PyTorch (MPS version)
-pip install torch==2.7.0 torchvision==0.22.0
-
-# Install dependencies
-poetry install --no-interaction
 
 # Run API service
 poetry run python -m dissector
@@ -48,17 +33,6 @@ docker run -d \
   -e SAM3_MODEL_PATH=/models/sam3.pt \
   dissector:latest
 ```
-
-### Mac Native (Recommended for Mac)
-
-For optimal performance on Apple Silicon, run natively:
-
-```bash
-poetry install
-poetry run python -m dissector
-```
-
-The service automatically detects and uses MPS acceleration if available.
 
 ## API
 
