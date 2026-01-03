@@ -115,13 +115,58 @@ HAND_PROMPTS: List[str] = [
     "bare fingers",
 ]
 
+LEG_PROMPTS: List[str] = [
+    "leg",
+    "legs",
+    "human leg",
+    "thigh",
+    "thighs",
+]
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BPE_PATH = os.path.join(PROJECT_ROOT, "assets", "bpe_simple_vocab_16e6.txt.gz")
-# Model path: check /models (mounted volume) first, then fallback to local models/
-SAM3_CHECKPOINT_PATH = os.getenv("SAM3_MODEL_PATH") or (
-    "/models/sam3.pt" if os.path.exists("/models/sam3.pt") else
-    os.path.join(PROJECT_ROOT, "models", "sam3.pt")
-)
+
+def find_sam3_checkpoint() -> str:
+    import glob
+    model_path = os.getenv("SAM3_MODEL_PATH")
+    if model_path:
+        if os.path.exists(model_path):
+            return model_path
+        model_dir = os.path.dirname(model_path) if os.path.dirname(model_path) else "."
+        model_base = os.path.basename(model_path) if os.path.basename(model_path) else "sam3.pt"
+    else:
+        model_dir = "/models" if os.path.exists("/models") else os.path.join(PROJECT_ROOT, "models")
+        model_base = "sam3.pt"
+    
+    full_path = os.path.join(model_dir, model_base)
+    if os.path.exists(full_path):
+        return full_path
+    
+    patterns = [
+        os.path.join(model_dir, "sam3-*-of-*.pt"),
+    ]
+    
+    for pattern in patterns:
+        shards = sorted(glob.glob(pattern))
+        if len(shards) >= 2:
+            logger.info(f"Found {len(shards)} sharded checkpoint files, merging...")
+            merged_path = os.path.join(model_dir, "sam3.pt")
+            if not os.path.exists(merged_path):
+                checkpoint = {}
+                for shard in shards:
+                    logger.info(f"Loading shard: {shard}")
+                    shard_data = torch.load(shard, map_location="cpu")
+                    if isinstance(shard_data, dict):
+                        checkpoint.update(shard_data)
+                    else:
+                        checkpoint.update(shard_data.state_dict() if hasattr(shard_data, 'state_dict') else {})
+                logger.info(f"Saving merged checkpoint to: {merged_path}")
+                torch.save(checkpoint, merged_path)
+            return merged_path
+    
+    return full_path
+
+SAM3_CHECKPOINT_PATH = find_sam3_checkpoint()
 
 def load_models(dino_model_name: str, device: torch.device) -> Tuple[AutoProcessor, AutoModelForZeroShotObjectDetection, Sam3Processor]:
     processor = AutoProcessor.from_pretrained(dino_model_name)
@@ -399,6 +444,20 @@ def process_image(
     upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
+    
+    logger.debug("[STEP] detecting legs in upper (move to lower)...")
+    detect_and_store("legs", LEG_PROMPTS)
+    leg_mask = masks.get("legs", np.zeros(image_rgb.shape[:2], dtype=bool))
+    leg_mask = remove_small_components(leg_mask, min_area_ratio=0.0005)
+    
+    if np.any(leg_mask) and np.any(upper_mask):
+        leg_in_upper = leg_mask & upper_mask
+        if np.any(leg_in_upper):
+            upper_mask = upper_mask & (~leg_in_upper)
+            masks["lower"] = masks.get("lower", np.zeros_like(leg_in_upper)) | leg_in_upper
+            masks["lower"] = remove_small_components(masks["lower"], min_area_ratio=0.001)
+            upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
+            masks["upper"] = upper_mask
 
     logger.debug("[STEP] detecting hands (remove from upper)...")
     detect_and_store("hands", HAND_PROMPTS)
