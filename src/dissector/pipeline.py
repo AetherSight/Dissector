@@ -209,9 +209,7 @@ def run_grounding_dino(
             text_threshold=text_threshold,
             target_sizes=target_sizes,
         )[0]
-        logger.info(f"Successfully used post_process_grounded_object_detection with threshold={box_threshold}, text_threshold={text_threshold}")
-    except TypeError as e:
-        logger.warning(f"First attempt failed: {e}")
+    except TypeError:
         try:
             results = processor.post_process_grounded_object_detection(
                 outputs,
@@ -219,15 +217,12 @@ def run_grounding_dino(
                 threshold=box_threshold,
                 target_sizes=target_sizes,
             )[0]
-            logger.warning(f"Using fallback post_process_grounded_object_detection (text_threshold not supported)")
-        except TypeError as e2:
-            logger.warning(f"Second attempt failed: {e2}")
+        except TypeError:
             results = processor.post_process_object_detection(
                 outputs,
                 threshold=box_threshold,
                 target_sizes=target_sizes,
             )[0]
-            logger.warning(f"Using fallback post_process_object_detection (text_threshold not supported)")
     return results
 
 
