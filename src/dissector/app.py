@@ -4,6 +4,8 @@ HTTP API service for Dissector gear segmentation.
 import os
 import logging
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 import torch
@@ -22,6 +24,19 @@ processor = None
 dino_model = None
 sam3_processor = None
 device = None
+
+# Thread pool for CPU-intensive image processing
+# Use CPU count, but limit to reasonable number to avoid resource exhaustion
+# If GPU is available, can handle more concurrent requests
+_max_workers = int(os.getenv('MAX_WORKERS', 0))
+if _max_workers <= 0:
+    cpu_count = multiprocessing.cpu_count()
+    if torch.cuda.is_available() or (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+        _max_workers = min(cpu_count, 8)
+    else:
+        _max_workers = min(cpu_count // 2, 4)
+executor = ThreadPoolExecutor(max_workers=_max_workers)
+logger.info(f"Thread pool initialized with {_max_workers} workers")
 
 
 @app.on_event("startup")
@@ -86,15 +101,19 @@ async def segment_image(
             tmp_path = tmp_file.name
         
         try:
-            # Process image
-            results = process_image(
-                image_path=tmp_path,
-                processor=processor,
-                dino_model=dino_model,
-                sam3_processor=sam3_processor,
-                device=device,
-                box_threshold=box_threshold,
-                text_threshold=text_threshold,
+            # Process image in thread pool to avoid blocking event loop
+            import asyncio
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(
+                executor,
+                process_image,
+                tmp_path,
+                processor,
+                dino_model,
+                sam3_processor,
+                device,
+                box_threshold,
+                text_threshold,
             )
             
             return JSONResponse(content=results)
