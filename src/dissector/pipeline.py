@@ -5,6 +5,7 @@ import platform
 from typing import Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 logging.getLogger("transformers.image_utils").setLevel(logging.WARNING)
 logging.getLogger("transformers.image_processing_utils").setLevel(logging.WARNING)
 
@@ -204,11 +205,13 @@ def run_grounding_dino(
         results = processor.post_process_grounded_object_detection(
             outputs,
             input_ids=inputs["input_ids"],
-            box_threshold=box_threshold,
+            threshold=box_threshold,
             text_threshold=text_threshold,
             target_sizes=target_sizes,
         )[0]
-    except TypeError:
+        logger.info(f"Successfully used post_process_grounded_object_detection with threshold={box_threshold}, text_threshold={text_threshold}")
+    except TypeError as e:
+        logger.warning(f"First attempt failed: {e}")
         try:
             results = processor.post_process_grounded_object_detection(
                 outputs,
@@ -216,12 +219,15 @@ def run_grounding_dino(
                 threshold=box_threshold,
                 target_sizes=target_sizes,
             )[0]
-        except TypeError:
+            logger.warning(f"Using fallback post_process_grounded_object_detection (text_threshold not supported)")
+        except TypeError as e2:
+            logger.warning(f"Second attempt failed: {e2}")
             results = processor.post_process_object_detection(
                 outputs,
                 threshold=box_threshold,
                 target_sizes=target_sizes,
             )[0]
+            logger.warning(f"Using fallback post_process_object_detection (text_threshold not supported)")
     return results
 
 
