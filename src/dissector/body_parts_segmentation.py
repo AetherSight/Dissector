@@ -17,6 +17,66 @@ from .sam3_backend import SAM3Base
 
 logger = logging.getLogger(__name__)
 
+# 估算 token 数量的辅助函数（简单方法：1 token ≈ 0.75 单词，或约 4 字符）
+def estimate_tokens(text: str) -> int:
+    """
+    估算文本的 token 数量
+    使用简单启发式：单词数 * 1.33 或 字符数 / 4，取较大值
+    """
+    word_count = len(text.split())
+    char_count = len(text)
+    # 取两种估算方法的平均值，向上取整
+    tokens_by_words = int(word_count * 1.33) + 1
+    tokens_by_chars = int(char_count / 4) + 1
+    return max(tokens_by_words, tokens_by_chars)
+
+def batch_prompts_by_token_limit(prompts: List[str], max_tokens: int = 64) -> List[str]:
+    """
+    将提示词列表按 token 限制分组，每组用逗号连接
+    
+    Args:
+        prompts: 提示词列表
+        max_tokens: 每组最大 token 数（默认 64）
+    
+    Returns:
+        分组后的提示词列表，每组用逗号连接
+    """
+    batches = []
+    current_batch = []
+    current_tokens = 0
+    
+    for prompt in prompts:
+        prompt_tokens = estimate_tokens(prompt)
+        
+        # 如果单个提示词就超过限制，单独成组
+        if prompt_tokens > max_tokens:
+            if current_batch:
+                batches.append(", ".join(current_batch))
+                current_batch = []
+                current_tokens = 0
+            batches.append(prompt)
+            continue
+        
+        # 检查加入当前提示词后是否超过限制
+        # 需要加上分隔符的 token（", " 约 1 token）
+        separator_tokens = 1 if current_batch else 0
+        if current_tokens + separator_tokens + prompt_tokens > max_tokens:
+            # 当前批次已满，保存并开始新批次
+            if current_batch:
+                batches.append(", ".join(current_batch))
+            current_batch = [prompt]
+            current_tokens = prompt_tokens
+        else:
+            # 加入当前批次
+            current_batch.append(prompt)
+            current_tokens += separator_tokens + prompt_tokens
+    
+    # 处理最后一个批次
+    if current_batch:
+        batches.append(", ".join(current_batch))
+    
+    return batches
+
 # 5个部位的文本提示词
 BODY_PARTS_PROMPTS = {
     "upper": [
@@ -345,30 +405,33 @@ def segment_body_parts_with_sam3(
             
             mask = None
             
-            # 统一使用文本提示词叠加方式（MLX 和 Ultralytics 都尝试）
-            # 分别调用每个提示词，然后合并结果（避免超长提示词被截断）
-            mask_total = None
-            for prompt in prompts:
-                try:
-                    single_mask = sam3_model.generate_mask_from_text_prompt(
-                        image_pil=image_pil,
-                        text_prompt=prompt,
-                    )
-                    if single_mask is not None and single_mask.size > 0:
-                        if mask_total is None:
-                            mask_total = single_mask.copy()
-                        else:
-                            mask_total |= single_mask
-                except Exception as e:
-                    logger.warning(f"Error with prompt '{prompt}': {e}")
-                    continue
-            
-            mask = mask_total
-            
-            # 如果文本提示词方式失败且是 Ultralytics，回退到 DINO + SAM3
-            if mask is None or mask.size == 0:
-                if use_dino:
-                    logger.info(f"Text prompt failed for {part_name}, falling back to DINO + SAM3")
+            # 根据后端类型选择处理方式
+            if sam3_model.backend_name == "mlx":
+                # MLX: 批量发送提示词（每组最多 64 token）
+                batched_prompts = batch_prompts_by_token_limit(prompts, max_tokens=64)
+                logger.info(f"MLX: {part_name} prompts batched into {len(batched_prompts)} groups")
+                
+                mask_total = None
+                for batch_prompt in batched_prompts:
+                    try:
+                        batch_mask = sam3_model.generate_mask_from_text_prompt(
+                            image_pil=image_pil,
+                            text_prompt=batch_prompt,
+                        )
+                        if batch_mask is not None and batch_mask.size > 0:
+                            if mask_total is None:
+                                mask_total = batch_mask.copy()
+                            else:
+                                mask_total |= batch_mask
+                    except Exception as e:
+                        logger.warning(f"Error with batch prompt '{batch_prompt[:50]}...': {e}")
+                        continue
+                
+                mask = mask_total
+                
+                # 如果 MLX 文本提示词失败，尝试 DINO 回退（如果可用）
+                if (mask is None or mask.size == 0) and use_dino:
+                    logger.info(f"MLX text prompt failed for {part_name}, falling back to DINO + SAM3")
                     boxes = run_grounding_dino_for_prompts(
                         image_pil=image_pil,
                         prompts=prompts,
@@ -380,10 +443,30 @@ def segment_body_parts_with_sam3(
                     )
                     
                     if boxes.size > 0:
-                        # 使用 SAM3 从边界框生成 mask
                         mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
                     else:
                         logger.warning(f"No boxes detected for {part_name}")
+            else:
+                # Ultralytics: 直接使用 DINO + SAM3（不支持文本提示词）
+                if use_dino:
+                    logger.info(f"Using DINO + SAM3 for {part_name} (Ultralytics backend)")
+                    boxes = run_grounding_dino_for_prompts(
+                        image_pil=image_pil,
+                        prompts=prompts,
+                        processor=processor,
+                        dino_model=dino_model,
+                        device=device,
+                        box_threshold=box_threshold,
+                        text_threshold=text_threshold,
+                    )
+                    
+                    if boxes.size > 0:
+                        mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
+                    else:
+                        logger.warning(f"No boxes detected for {part_name}")
+                else:
+                    logger.warning(f"DINO not available for {part_name} (Ultralytics backend)")
+                    mask = None
             
             if mask is None or mask.size == 0:
                 logger.warning(f"No mask found for {part_name}")
