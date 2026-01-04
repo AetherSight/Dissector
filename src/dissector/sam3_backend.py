@@ -272,7 +272,6 @@ class MLXSAM3(SAM3Base):
         masks_valid = masks is not None and len(masks) > 0
         
         if not masks_valid:
-        if not masks_valid:
             logger.debug("[MLX] No masks in state, attempting to generate with model...")
             
             # 方法1: 尝试调用 model 的 o2m_mask_predict 方法
