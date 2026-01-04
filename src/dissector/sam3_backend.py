@@ -217,6 +217,10 @@ class MLXSAM3(SAM3Base):
         state_after_box = None
         api_method = None
         
+        # 首先列出 processor 的所有方法，用于调试
+        processor_methods = [m for m in dir(self.processor) if not m.startswith('_') and callable(getattr(self.processor, m, None))]
+        logger.debug(f"[MLX] Available processor methods: {processor_methods}")
+        
         # 方法1: 尝试 set_box_prompt
         if hasattr(self.processor, 'set_box_prompt'):
             try:
@@ -237,7 +241,27 @@ class MLXSAM3(SAM3Base):
             except Exception as e:
                 logger.warning(f"[MLX] set_bbox_prompt failed: {e}")
         
-        # 方法3: 尝试直接设置 boxes
+        # 方法3: 尝试 set_prompt (通用方法，可能接受 box)
+        if state_after_box is None and hasattr(self.processor, 'set_prompt'):
+            try:
+                logger.debug("[MLX] Trying set_prompt with box")
+                state_after_box = self.processor.set_prompt(box_normalized, state)
+                api_method = "set_prompt"
+                logger.debug(f"[MLX] set_prompt succeeded, state type: {type(state_after_box)}")
+            except Exception as e:
+                logger.debug(f"[MLX] set_prompt failed: {e}")
+        
+        # 方法4: 尝试直接调用 processor，传入 box 和 state
+        if state_after_box is None:
+            try:
+                logger.debug("[MLX] Trying processor(box, state)")
+                state_after_box = self.processor(box_normalized, state)
+                api_method = "processor_call_box_state"
+                logger.debug(f"[MLX] processor(box, state) succeeded, state type: {type(state_after_box)}")
+            except Exception as e:
+                logger.debug(f"[MLX] processor(box, state) failed: {e}")
+        
+        # 方法5: 尝试直接设置 boxes（fallback）
         if state_after_box is None:
             try:
                 logger.debug("[MLX] Trying direct box assignment")
@@ -259,28 +283,84 @@ class MLXSAM3(SAM3Base):
         
         logger.debug(f"[MLX] Using API method: {api_method}")
         
-        # 获取 masks
+        # 尝试生成 masks - 设置 box 后可能需要调用 processor 或 model 来生成
         masks = None
+        
+        # 首先检查 state 中是否已经有 masks
         if isinstance(state_after_box, dict):
             masks = state_after_box.get("masks", [])
-            logger.debug(f"[MLX] Got masks from dict, count: {len(masks) if masks else 0}")
-            if masks:
-                logger.debug(f"[MLX] First mask type: {type(masks[0])}, shape: {getattr(masks[0], 'shape', 'N/A')}")
-        else:
-            masks = getattr(state_after_box, "masks", [])
-            logger.debug(f"[MLX] Got masks from attribute, count: {len(masks) if masks else 0}")
-            if not masks:
-                # 尝试其他可能的属性名
-                for attr in ['mask', 'segmentation', 'output']:
-                    if hasattr(state_after_box, attr):
-                        potential = getattr(state_after_box, attr)
-                        logger.debug(f"[MLX] Found attribute '{attr}': {type(potential)}")
-                        if potential is not None:
-                            masks = [potential] if not isinstance(potential, (list, tuple)) else potential
-                            break
+            logger.debug(f"[MLX] Initial masks check from dict, count: {len(masks) if masks else 0}")
+        
+        # 如果还没有 masks，尝试调用 processor 来生成
+        if not masks or len(masks) == 0:
+            logger.debug("[MLX] No masks in state, attempting to generate...")
+            
+            # 方法1: 尝试调用 processor 的 generate 方法
+            if hasattr(self.processor, 'generate'):
+                try:
+                    logger.debug("[MLX] Trying processor.generate()")
+                    state_with_masks = self.processor.generate(state_after_box)
+                    if isinstance(state_with_masks, dict):
+                        masks = state_with_masks.get("masks", [])
+                        logger.debug(f"[MLX] generate() returned masks, count: {len(masks) if masks else 0}")
+                except Exception as e:
+                    logger.debug(f"[MLX] processor.generate() failed: {e}")
+            
+            # 方法2: 尝试调用 processor 本身（传入 state）
+            if (not masks or len(masks) == 0) and hasattr(self.processor, '__call__'):
+                try:
+                    logger.debug("[MLX] Trying processor(state)")
+                    state_with_masks = self.processor(state_after_box)
+                    if isinstance(state_with_masks, dict):
+                        masks = state_with_masks.get("masks", [])
+                        logger.debug(f"[MLX] processor(state) returned masks, count: {len(masks) if masks else 0}")
+                except Exception as e:
+                    logger.debug(f"[MLX] processor(state) failed: {e}")
+            
+            # 方法3: 尝试调用 model 来生成 masks
+            if (not masks or len(masks) == 0) and hasattr(self.model, '__call__'):
+                try:
+                    logger.debug("[MLX] Trying model(state)")
+                    state_with_masks = self.model(state_after_box)
+                    if isinstance(state_with_masks, dict):
+                        masks = state_with_masks.get("masks", [])
+                        logger.debug(f"[MLX] model(state) returned masks, count: {len(masks) if masks else 0}")
+                except Exception as e:
+                    logger.debug(f"[MLX] model(state) failed: {e}")
+            
+            # 方法4: 尝试使用 set_box_prompt 如果它返回包含 masks 的 state
+            if (not masks or len(masks) == 0) and isinstance(state_after_box, dict):
+                # 检查是否有其他方法可以生成 masks
+                if hasattr(self.processor, 'predict'):
+                    try:
+                        logger.debug("[MLX] Trying processor.predict()")
+                        result = self.processor.predict(state_after_box)
+                        if isinstance(result, dict):
+                            masks = result.get("masks", [])
+                            logger.debug(f"[MLX] predict() returned masks, count: {len(masks) if masks else 0}")
+                    except Exception as e:
+                        logger.debug(f"[MLX] processor.predict() failed: {e}")
+        
+        # 如果还是没有 masks，尝试从 state_after_box 中获取
+        if not masks or len(masks) == 0:
+            if isinstance(state_after_box, dict):
+                masks = state_after_box.get("masks", [])
+            else:
+                masks = getattr(state_after_box, "masks", [])
+                if not masks:
+                    # 尝试其他可能的属性名
+                    for attr in ['mask', 'segmentation', 'output']:
+                        if hasattr(state_after_box, attr):
+                            potential = getattr(state_after_box, attr)
+                            logger.debug(f"[MLX] Found attribute '{attr}': {type(potential)}")
+                            if potential is not None:
+                                masks = [potential] if not isinstance(potential, (list, tuple)) else potential
+                                break
         
         if not masks or len(masks) == 0:
-            logger.warning(f"[MLX] No masks found in state. State keys/attrs: {list(state_after_box.keys()) if isinstance(state_after_box, dict) else dir(state_after_box)[:10]}")
+            logger.warning(f"[MLX] No masks found after all attempts. State keys: {list(state_after_box.keys()) if isinstance(state_after_box, dict) else 'N/A'}")
+            logger.debug(f"[MLX] Processor methods: {[m for m in dir(self.processor) if not m.startswith('_')]}")
+            logger.debug(f"[MLX] Model methods: {[m for m in dir(self.model) if not m.startswith('_')]}")
             return np.zeros((h, w), dtype=bool)
         
         # 转换 mask 为 numpy array
