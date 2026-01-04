@@ -4,7 +4,6 @@ import logging
 import platform
 import time
 from typing import Dict, List, Tuple, Any, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -508,54 +507,61 @@ def process_image(
                 filtered.append(boxes[i])
         return np.array(filtered) if filtered else np.array([])
 
-    def process_part(key: str, prompts: List[str]):
-        step_start = time.time()
-        if use_batch:
-            boxes = filter_boxes_by_prompts(all_boxes, all_labels, prompts)
-            if len(boxes) > 0:
-                mask = mask_from_boxes(image_pil, boxes, sam3_model)
-                if mask is not None:
-                    logger.info(f"[PERF] {key}: SAM3={time.time()-step_start:.2f}s, boxes={len(boxes)}")
-                    return key, mask
-            detect_and_store(key, prompts)
-            return key, masks.get(key, np.zeros((h, w), dtype=bool))
+    logger.info("[STEP] detecting shoes ...")
+    step_start = time.time()
+    if use_batch:
+        shoes_boxes = filter_boxes_by_prompts(all_boxes, all_labels, FOOTWEAR_PROMPTS)
+        if len(shoes_boxes) > 0:
+            masks["shoes"] = mask_from_boxes(image_pil, shoes_boxes, sam3_model)
+            logger.info(f"[PERF] shoes: SAM3={time.time()-step_start:.2f}s, boxes={len(shoes_boxes)}")
         else:
-            detect_and_store(key, prompts)
-            return key, masks.get(key, np.zeros((h, w), dtype=bool))
+            detect_and_store("shoes", FOOTWEAR_PROMPTS)
+    else:
+        detect_and_store("shoes", FOOTWEAR_PROMPTS)
 
-    logger.info("[STEP] Stage 1: detecting shoes and head (parallel)...")
-    stage1_start = time.time()
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {
-            executor.submit(process_part, "shoes", FOOTWEAR_PROMPTS): "shoes",
-            executor.submit(process_part, "head", HEADWEAR_PROMPTS): "head",
-        }
-        for future in as_completed(futures):
-            key, mask = future.result()
-            masks[key] = mask
-    logger.info(f"[PERF] Stage 1 completed: {time.time()-stage1_start:.2f}s")
-    
+    logger.info("[STEP] detecting lower ...")
+    step_start = time.time()
+    if use_batch:
+        lower_boxes = filter_boxes_by_prompts(all_boxes, all_labels, LOWER_PROMPTS)
+        if len(lower_boxes) > 0:
+            masks["lower_raw"] = mask_from_boxes(image_pil, lower_boxes, sam3_model)
+            logger.info(f"[PERF] lower_raw: SAM3={time.time()-step_start:.2f}s, boxes={len(lower_boxes)}")
+        else:
+            detect_and_store("lower_raw", LOWER_PROMPTS)
+    else:
+        detect_and_store("lower_raw", LOWER_PROMPTS)
+    lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
+    lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
+    masks["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+
+    logger.info("[STEP] detecting head (for removal) ...")
+    step_start = time.time()
+    if use_batch:
+        head_boxes = filter_boxes_by_prompts(all_boxes, all_labels, HEADWEAR_PROMPTS)
+        if len(head_boxes) > 0:
+            masks["head"] = mask_from_boxes(image_pil, head_boxes, sam3_model)
+            logger.info(f"[PERF] head: SAM3={time.time()-step_start:.2f}s, boxes={len(head_boxes)}")
+        else:
+            detect_and_store("head", HEADWEAR_PROMPTS)
+    else:
+        detect_and_store("head", HEADWEAR_PROMPTS)
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
     if np.any(head_mask):
         kernel = np.ones((15, 15), np.uint8)
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["head"] = head_mask
 
-    logger.info("[STEP] Stage 2: detecting lower and upper (parallel)...")
-    stage2_start = time.time()
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {
-            executor.submit(process_part, "lower_raw", LOWER_PROMPTS): "lower_raw",
-            executor.submit(process_part, "upper_raw", UPPER_PROMPTS): "upper_raw",
-        }
-        for future in as_completed(futures):
-            key, mask = future.result()
-            masks[key] = mask
-    logger.info(f"[PERF] Stage 2 completed: {time.time()-stage2_start:.2f}s")
-    
-    lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
-    lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
-    masks["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+    logger.info("[STEP] detecting upper ...")
+    step_start = time.time()
+    if use_batch:
+        upper_boxes = filter_boxes_by_prompts(all_boxes, all_labels, UPPER_PROMPTS)
+        if len(upper_boxes) > 0:
+            masks["upper_raw"] = mask_from_boxes(image_pil, upper_boxes, sam3_model)
+            logger.info(f"[PERF] upper_raw: SAM3={time.time()-step_start:.2f}s, boxes={len(upper_boxes)}")
+        else:
+            detect_and_store("upper_raw", UPPER_PROMPTS)
+    else:
+        detect_and_store("upper_raw", UPPER_PROMPTS)
     step_start = time.time()
     if use_batch:
         shoes_boxes = filter_boxes_by_prompts(all_boxes, all_labels, FOOTWEAR_PROMPTS)
@@ -616,17 +622,17 @@ def process_image(
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
-    logger.info("[STEP] Stage 3: detecting legs and hands (parallel)...")
-    stage3_start = time.time()
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {
-            executor.submit(process_part, "legs", LEG_PROMPTS): "legs",
-            executor.submit(process_part, "hands", HAND_PROMPTS): "hands",
-        }
-        for future in as_completed(futures):
-            key, mask = future.result()
-            masks[key] = mask
-    logger.info(f"[PERF] Stage 3 completed: {time.time()-stage3_start:.2f}s")
+    logger.info("[STEP] detecting legs in upper (move to lower)...")
+    step_start = time.time()
+    if use_batch:
+        leg_boxes = filter_boxes_by_prompts(all_boxes, all_labels, LEG_PROMPTS)
+        if len(leg_boxes) > 0:
+            masks["legs"] = mask_from_boxes(image_pil, leg_boxes, sam3_model)
+            logger.info(f"[PERF] legs: SAM3={time.time()-step_start:.2f}s, boxes={len(leg_boxes)}")
+        else:
+            detect_and_store("legs", LEG_PROMPTS)
+    else:
+        detect_and_store("legs", LEG_PROMPTS)
     
     leg_mask = masks.get("legs", np.zeros(image_rgb.shape[:2], dtype=bool))
     leg_mask = remove_small_components(leg_mask, min_area_ratio=0.0005)
