@@ -347,32 +347,70 @@ class MLXSAM3(SAM3Base):
         boxes_mx = mx.array(bbox_scaled)
         boxes_mx = mx.expand_dims(boxes_mx, 0)
 
-        # 推理
-        source_encoded = self.model.image_encoder(img_mx)
-        sparse_emb, dense_emb = self.model.prompt_encoder(
-            points=None, boxes=boxes_mx, masks=None
-        )
-        low_res_masks, iou_preds, _ = self.model.mask_decoder(
-            image_embeddings=source_encoded,
-            image_pe=self.model.prompt_encoder.get_dense_pe(),
-            sparse_prompt_embeddings=sparse_emb,
-            dense_prompt_embeddings=dense_emb,
-            multimask_output=True,
-        )
-        mx.eval(low_res_masks, iou_preds)
+        # 直接调用模型
+        try:
+            # 尝试直接调用模型
+            result = self.model(img_mx, boxes=boxes_mx, multimask_output=True)
+            mx.eval()
 
-        # 转换为 numpy
-        masks = np.array(low_res_masks[0, 0])  # (3, 256, 256)
-        scores = np.array(iou_preds[0, 0])     # (3,)
+            if isinstance(result, dict):
+                masks = result.get("masks", None)
+                scores = result.get("iou_predictions", None)
+            else:
+                # 如果返回的是元组或其他格式
+                masks = result[0] if len(result) > 0 else None
+                scores = result[1] if len(result) > 1 else None
+
+        except Exception as e:
+            logger.warning(f"Direct model call failed: {e}, trying alternative approach")
+            # 尝试简单的推理调用
+            try:
+                result = self.model(img_mx, bboxes=bbox_scaled)
+                mx.eval()
+
+                if isinstance(result, dict):
+                    masks = result.get("masks", None)
+                    scores = result.get("scores", None)
+                else:
+                    masks = result
+                    scores = None
+            except Exception as e2:
+                logger.error(f"All model call attempts failed: {e2}")
+                return None
+
+        if masks is None:
+            return None
+
+        # 转换为 numpy 并选择最佳 mask
+        masks_np = np.array(masks)
+
+        if masks_np.ndim == 4:  # (1, 1, 3, H, W) 或类似
+            masks_np = masks_np[0, 0]  # 取第一个 batch，第一个 bbox
+        elif masks_np.ndim == 3:  # (3, H, W) 或 (1, 3, H, W)
+            if masks_np.shape[0] == 1:
+                masks_np = masks_np[0]
+            elif masks_np.shape[0] == 3:
+                pass  # 已经是 (3, H, W)
+            else:
+                masks_np = masks_np[0]  # 默认取第一个
+
+        if scores is not None:
+            scores_np = np.array(scores)
+            if scores_np.ndim == 2:
+                scores_np = scores_np[0, 0]  # 取第一个 batch，第一个 bbox
+            elif scores_np.ndim == 1:
+                pass  # 已经是 (3,)
+            best_idx = np.argmax(scores_np)
+        else:
+            best_idx = 0
 
         # 选择最佳 mask
-        best_idx = np.argmax(scores)
-        mask = masks[best_idx] > 0
+        mask = masks_np[best_idx] > 0
 
         # 调整尺寸
         mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
 
-        return {"masks": mask, "scores": scores}
+        return {"masks": mask, "scores": scores_np if scores is not None else None}
 
     def _direct_batch_inference(self, image_pil, bboxes):
         """直接使用 MLX 模型 API 的批量回退方法"""
@@ -393,38 +431,70 @@ class MLXSAM3(SAM3Base):
         bboxes_scaled = bboxes * scale
         boxes_mx = mx.array(bboxes_scaled)
 
-        # 批量推理
-        source_encoded = self.model.image_encoder(img_mx)
-        sparse_emb, dense_emb = self.model.prompt_encoder(
-            points=None, boxes=boxes_mx, masks=None
-        )
-        low_res_masks, iou_preds, _ = self.model.mask_decoder(
-            image_embeddings=source_encoded,
-            image_pe=self.model.prompt_encoder.get_dense_pe(),
-            sparse_prompt_embeddings=sparse_emb,
-            dense_prompt_embeddings=dense_emb,
-            multimask_output=True,
-        )
-        mx.eval(low_res_masks, iou_preds)
+        # 直接批量调用模型
+        try:
+            result = self.model(img_mx, boxes=boxes_mx, multimask_output=True)
+            mx.eval()
 
-        # 转换为 numpy 并合并
-        # low_res_masks: (1, N, 3, 256, 256)
-        # iou_preds: (1, N, 3)
-        masks = np.array(low_res_masks[0])  # (N, 3, 256, 256)
-        scores = np.array(iou_preds[0])     # (N, 3)
+            if isinstance(result, dict):
+                masks = result.get("masks", None)
+                scores = result.get("iou_predictions", None)
+            else:
+                masks = result[0] if len(result) > 0 else None
+                scores = result[1] if len(result) > 1 else None
+
+        except Exception as e:
+            logger.warning(f"Direct batch model call failed: {e}, trying alternative")
+            try:
+                result = self.model(img_mx, bboxes=bboxes_scaled)
+                mx.eval()
+
+                if isinstance(result, dict):
+                    masks = result.get("masks", None)
+                    scores = result.get("scores", None)
+                else:
+                    masks = result
+                    scores = None
+            except Exception as e2:
+                logger.error(f"All batch model calls failed: {e2}")
+                return None
+
+        if masks is None:
+            return None
+
+        # 转换为 numpy
+        masks_np = np.array(masks)
+
+        # 处理不同的输出格式
+        if masks_np.ndim == 5:  # (1, N, 3, H, W)
+            masks_np = masks_np[0]  # (N, 3, H, W)
 
         # 对每个 bbox 选择最佳 mask，然后合并
         final_masks = []
         for i in range(len(bboxes)):
-            bbox_masks = masks[i]  # (3, 256, 256)
-            bbox_scores = scores[i]  # (3,)
-            best_idx = np.argmax(bbox_scores)
-            mask = bbox_masks[best_idx] > 0  # (256, 256)
+            if masks_np.ndim == 4:  # (N, 3, H, W)
+                bbox_masks = masks_np[i]  # (3, H, W)
+            elif masks_np.ndim == 3:  # (3, H, W) - 单 bbox
+                bbox_masks = masks_np
+            else:
+                continue
+
+            if scores is not None:
+                scores_np = np.array(scores)
+                if scores_np.ndim == 3:  # (1, N, 3)
+                    scores_np = scores_np[0, i]  # (3,)
+                elif scores_np.ndim == 2:  # (N, 3)
+                    scores_np = scores_np[i]    # (3,)
+                best_idx = np.argmax(scores_np)
+            else:
+                best_idx = 0
+
+            mask = bbox_masks[best_idx] > 0
             final_masks.append(mask)
 
         # 合并所有 bbox 的 mask
         if final_masks:
-            combined_mask = np.any(final_masks, axis=0)  # (256, 256)
+            combined_mask = np.any(final_masks, axis=0)
         else:
             combined_mask = np.zeros((256, 256), dtype=bool)
 
