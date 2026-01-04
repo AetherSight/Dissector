@@ -27,9 +27,12 @@ def get_device() -> torch.device:
     """
     Get the best available device for PyTorch.
     Priority: CUDA > MPS (Apple Silicon) > CPU
+    On macOS with MLX backend, use CPU to avoid MPS concurrency issues.
     """
     if torch.cuda.is_available():
         return torch.device("cuda")
+    elif platform.system() == "Darwin":
+        return torch.device("cpu")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
     else:
