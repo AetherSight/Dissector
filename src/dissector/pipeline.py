@@ -482,13 +482,18 @@ def process_image(
     all_boxes = all_dino_res["boxes"].cpu().numpy() if "boxes" in all_dino_res else np.array([])
     all_labels = all_dino_res.get("labels", []) if "labels" in all_dino_res else []
     batch_dino_time = time.time() - step_start
-    logger.info(f"[PERF] Batch DINO: {batch_dino_time:.2f}s, total boxes={len(all_boxes)}")
+    logger.info(f"[PERF] Batch DINO: {batch_dino_time:.2f}s, total boxes={len(all_boxes)}, labels={len(all_labels) if all_labels else 0}")
+    
+    use_batch = len(all_boxes) > 0
+    if use_batch and len(all_labels) != len(all_boxes):
+        logger.warning(f"[PERF] Labels count mismatch: {len(all_labels)} vs {len(all_boxes)}, falling back to individual calls")
+        use_batch = False
     
     def filter_boxes_by_prompts(boxes: np.ndarray, labels: List[str], target_prompts: List[str]) -> np.ndarray:
         if len(boxes) == 0:
             return np.array([])
         if len(labels) == 0 or len(labels) != len(boxes):
-            return boxes
+            return np.array([])
         target_set = set(p.lower() for p in target_prompts)
         filtered = []
         for i, label in enumerate(labels):
@@ -498,27 +503,25 @@ def process_image(
 
     logger.info("[STEP] detecting shoes ...")
     step_start = time.time()
-    if len(all_boxes) > 0 and len(all_labels) == len(all_boxes):
+    if use_batch:
         shoes_boxes = filter_boxes_by_prompts(all_boxes, all_labels, FOOTWEAR_PROMPTS)
-    else:
-        detect_and_store("shoes", FOOTWEAR_PROMPTS)
-        shoes_boxes = None
-    if shoes_boxes is not None:
-        masks["shoes"] = mask_from_boxes(image_pil, shoes_boxes, sam3_model)
-        logger.info(f"[PERF] shoes: SAM3={time.time()-step_start:.2f}s, boxes={len(shoes_boxes)}")
+        if len(shoes_boxes) > 0:
+            masks["shoes"] = mask_from_boxes(image_pil, shoes_boxes, sam3_model)
+            logger.info(f"[PERF] shoes: SAM3={time.time()-step_start:.2f}s, boxes={len(shoes_boxes)}")
+        else:
+            detect_and_store("shoes", FOOTWEAR_PROMPTS)
     else:
         detect_and_store("shoes", FOOTWEAR_PROMPTS)
 
     logger.info("[STEP] detecting lower ...")
     step_start = time.time()
-    if len(all_boxes) > 0 and len(all_labels) == len(all_boxes):
+    if use_batch:
         lower_boxes = filter_boxes_by_prompts(all_boxes, all_labels, LOWER_PROMPTS)
-    else:
-        detect_and_store("lower_raw", LOWER_PROMPTS)
-        lower_boxes = None
-    if lower_boxes is not None:
-        masks["lower_raw"] = mask_from_boxes(image_pil, lower_boxes, sam3_model)
-        logger.info(f"[PERF] lower_raw: SAM3={time.time()-step_start:.2f}s, boxes={len(lower_boxes)}")
+        if len(lower_boxes) > 0:
+            masks["lower_raw"] = mask_from_boxes(image_pil, lower_boxes, sam3_model)
+            logger.info(f"[PERF] lower_raw: SAM3={time.time()-step_start:.2f}s, boxes={len(lower_boxes)}")
+        else:
+            detect_and_store("lower_raw", LOWER_PROMPTS)
     else:
         detect_and_store("lower_raw", LOWER_PROMPTS)
     lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
@@ -526,7 +529,16 @@ def process_image(
     masks["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
 
     logger.info("[STEP] detecting head (for removal) ...")
-    detect_and_store("head", HEADWEAR_PROMPTS)
+    step_start = time.time()
+    if use_batch:
+        head_boxes = filter_boxes_by_prompts(all_boxes, all_labels, HEADWEAR_PROMPTS)
+        if len(head_boxes) > 0:
+            masks["head"] = mask_from_boxes(image_pil, head_boxes, sam3_model)
+            logger.info(f"[PERF] head: SAM3={time.time()-step_start:.2f}s, boxes={len(head_boxes)}")
+        else:
+            detect_and_store("head", HEADWEAR_PROMPTS)
+    else:
+        detect_and_store("head", HEADWEAR_PROMPTS)
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
     if np.any(head_mask):
         kernel = np.ones((15, 15), np.uint8)
@@ -534,7 +546,16 @@ def process_image(
     masks["head"] = head_mask
 
     logger.info("[STEP] detecting upper ...")
-    detect_and_store("upper_raw", UPPER_PROMPTS)
+    step_start = time.time()
+    if use_batch:
+        upper_boxes = filter_boxes_by_prompts(all_boxes, all_labels, UPPER_PROMPTS)
+        if len(upper_boxes) > 0:
+            masks["upper_raw"] = mask_from_boxes(image_pil, upper_boxes, sam3_model)
+            logger.info(f"[PERF] upper_raw: SAM3={time.time()-step_start:.2f}s, boxes={len(upper_boxes)}")
+        else:
+            detect_and_store("upper_raw", UPPER_PROMPTS)
+    else:
+        detect_and_store("upper_raw", UPPER_PROMPTS)
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_mask_current = masks.get("lower", np.zeros_like(upper_mask))
     
@@ -563,14 +584,13 @@ def process_image(
     
     logger.info("[STEP] detecting legs in upper (move to lower)...")
     step_start = time.time()
-    if len(all_boxes) > 0 and len(all_labels) == len(all_boxes):
+    if use_batch:
         leg_boxes = filter_boxes_by_prompts(all_boxes, all_labels, LEG_PROMPTS)
-    else:
-        detect_and_store("legs", LEG_PROMPTS)
-        leg_boxes = None
-    if leg_boxes is not None:
-        masks["legs"] = mask_from_boxes(image_pil, leg_boxes, sam3_model)
-        logger.info(f"[PERF] legs: SAM3={time.time()-step_start:.2f}s, boxes={len(leg_boxes)}")
+        if len(leg_boxes) > 0:
+            masks["legs"] = mask_from_boxes(image_pil, leg_boxes, sam3_model)
+            logger.info(f"[PERF] legs: SAM3={time.time()-step_start:.2f}s, boxes={len(leg_boxes)}")
+        else:
+            detect_and_store("legs", LEG_PROMPTS)
     else:
         detect_and_store("legs", LEG_PROMPTS)
     leg_mask = masks.get("legs", np.zeros(image_rgb.shape[:2], dtype=bool))
@@ -587,14 +607,13 @@ def process_image(
 
     logger.info("[STEP] detecting hands (remove from upper)...")
     step_start = time.time()
-    if len(all_boxes) > 0 and len(all_labels) == len(all_boxes):
+    if use_batch:
         hand_boxes = filter_boxes_by_prompts(all_boxes, all_labels, HAND_PROMPTS)
-    else:
-        detect_and_store("hands", HAND_PROMPTS)
-        hand_boxes = None
-    if hand_boxes is not None:
-        masks["hands"] = mask_from_boxes(image_pil, hand_boxes, sam3_model)
-        logger.info(f"[PERF] hands: SAM3={time.time()-step_start:.2f}s, boxes={len(hand_boxes)}")
+        if len(hand_boxes) > 0:
+            masks["hands"] = mask_from_boxes(image_pil, hand_boxes, sam3_model)
+            logger.info(f"[PERF] hands: SAM3={time.time()-step_start:.2f}s, boxes={len(hand_boxes)}")
+        else:
+            detect_and_store("hands", HAND_PROMPTS)
     else:
         detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
