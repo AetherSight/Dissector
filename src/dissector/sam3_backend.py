@@ -213,6 +213,16 @@ class MLXSAM3(SAM3Base):
         box_normalized = np.array([[x1 / w, y1 / h, x2 / w, y2 / h]], dtype=np.float32)
         logger.debug(f"[MLX] Bbox normalized: {box_normalized}")
         
+        # 检查 add_geometric_prompt 方法的签名
+        if hasattr(self.processor, 'add_geometric_prompt'):
+            import inspect
+            try:
+                sig = inspect.signature(self.processor.add_geometric_prompt)
+                logger.info(f"[MLX] add_geometric_prompt signature: {sig}")
+                logger.info(f"[MLX] add_geometric_prompt docstring: {self.processor.add_geometric_prompt.__doc__}")
+            except Exception as e:
+                logger.debug(f"[MLX] Could not inspect add_geometric_prompt: {e}")
+        
         # 尝试不同的 API 方法设置 box prompt
         state_after_box = None
         api_method = None
