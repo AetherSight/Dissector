@@ -258,10 +258,31 @@ class MLXSAM3(SAM3Base):
         
         # 检查 state 中是否有 masks
         if isinstance(state_after_box, dict):
-            masks = state_after_box.get("masks", [])
-            logger.debug(f"[MLX] Masks from state after {api_method}, count: {len(masks) if masks else 0}")
-            if masks:
-                logger.info(f"[MLX] Successfully generated {len(masks)} mask(s) using {api_method}!")
+            masks_raw = state_after_box.get("masks", [])
+            
+            # MLX 可能返回 MLX array 或其他类型，需要转换为 numpy
+            if masks_raw is not None and len(masks_raw) > 0:
+                # 尝试转换为 numpy array
+                try:
+                    # 如果是 MLX array，转换为 numpy
+                    if hasattr(masks_raw, '__array__'):
+                        masks = np.array(masks_raw)
+                    elif isinstance(masks_raw, (list, tuple)):
+                        # 如果是列表，尝试转换每个元素
+                        masks = [np.array(m) if hasattr(m, '__array__') else m for m in masks_raw]
+                    else:
+                        masks = masks_raw
+                    
+                    # 获取 mask 数量（安全的方式）
+                    mask_count = len(masks) if hasattr(masks, '__len__') else 1
+                    logger.debug(f"[MLX] Masks from state after {api_method}, count: {mask_count}, type: {type(masks_raw)}")
+                    if mask_count > 0:
+                        logger.info(f"[MLX] Successfully generated {mask_count} mask(s) using {api_method}!")
+                except Exception as e:
+                    logger.warning(f"[MLX] Error processing masks: {e}, using raw masks")
+                    masks = masks_raw
+            else:
+                logger.debug(f"[MLX] No masks in state after {api_method}")
         
         # 如果还没有 masks，尝试调用 model 来生成
         if not masks or len(masks) == 0:
@@ -324,30 +345,59 @@ class MLXSAM3(SAM3Base):
                     logger.debug(f"[MLX] processor.model() approach failed: {e}")
         
         # 如果还是没有 masks，尝试从 state_after_box 中获取
-        if not masks or len(masks) == 0:
+        if masks is None:
             if isinstance(state_after_box, dict):
-                masks = state_after_box.get("masks", [])
+                masks_raw = state_after_box.get("masks", [])
+                # 转换 MLX array 为 numpy
+                if masks_raw is not None:
+                    try:
+                        if hasattr(masks_raw, '__array__'):
+                            masks = np.array(masks_raw)
+                        elif isinstance(masks_raw, (list, tuple)):
+                            masks = [np.array(m) if hasattr(m, '__array__') else m for m in masks_raw]
+                        else:
+                            masks = masks_raw
+                    except Exception as e:
+                        logger.warning(f"[MLX] Error converting masks: {e}")
+                        masks = masks_raw
             else:
                 masks = getattr(state_after_box, "masks", [])
-                if not masks:
-                    # 尝试其他可能的属性名
-                    for attr in ['mask', 'segmentation', 'output']:
-                        if hasattr(state_after_box, attr):
-                            potential = getattr(state_after_box, attr)
-                            logger.debug(f"[MLX] Found attribute '{attr}': {type(potential)}")
-                            if potential is not None:
-                                masks = [potential] if not isinstance(potential, (list, tuple)) else potential
-                                break
         
-        if not masks or len(masks) == 0:
+        # 检查 masks 是否为空（安全的方式）
+        has_masks = False
+        if masks is not None:
+            try:
+                if hasattr(masks, '__len__'):
+                    has_masks = len(masks) > 0
+                else:
+                    has_masks = masks is not None
+            except Exception:
+                has_masks = masks is not None
+        
+        if not has_masks:
             logger.warning(f"[MLX] No masks found after all attempts. State keys: {list(state_after_box.keys()) if isinstance(state_after_box, dict) else 'N/A'}")
-            logger.debug(f"[MLX] Processor methods: {[m for m in dir(self.processor) if not m.startswith('_')]}")
-            logger.debug(f"[MLX] Model methods: {[m for m in dir(self.model) if not m.startswith('_')]}")
             return np.zeros((h, w), dtype=bool)
         
         # 转换 mask 为 numpy array
-        mask = masks[0] if isinstance(masks[0], np.ndarray) else np.array(masks[0])
-        logger.debug(f"[MLX] Mask converted, dtype: {mask.dtype}, shape: {mask.shape}, min: {mask.min()}, max: {mask.max()}")
+        # masks 可能是 MLX array、numpy array 或列表
+        try:
+            if isinstance(masks, (list, tuple)):
+                # 如果是列表，取第一个
+                mask_raw = masks[0]
+            else:
+                # 如果是单个 array，直接使用
+                mask_raw = masks
+            
+            # 转换为 numpy array
+            if hasattr(mask_raw, '__array__'):
+                mask = np.array(mask_raw)
+            else:
+                mask = np.array(mask_raw)
+            
+            logger.debug(f"[MLX] Mask converted, dtype: {mask.dtype}, shape: {mask.shape}, min: {mask.min()}, max: {mask.max()}")
+        except Exception as e:
+            logger.error(f"[MLX] Error converting mask to numpy: {e}", exc_info=True)
+            return np.zeros((h, w), dtype=bool)
         
         # 确保 mask 是布尔类型
         if mask.dtype != bool:
