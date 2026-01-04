@@ -347,33 +347,56 @@ class MLXSAM3(SAM3Base):
         boxes_mx = mx.array(bbox_scaled)
         boxes_mx = mx.expand_dims(boxes_mx, 0)
 
-        # 直接调用模型
+        # 将 bbox 转换为点提示，因为 Sam3Image 似乎不支持 bbox 输入
         try:
-            # 尝试直接调用模型
-            result = self.model(img_mx, boxes=boxes_mx, multimask_output=True)
+            # 从 bbox 创建点提示（使用中心点作为正提示，四角作为负提示）
+            x1, y1, x2, y2 = bbox_scaled[0]
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+
+            # 正点：bbox 中心
+            # 负点：bbox 四个角（稍微外扩）
+            points = [
+                [center_x, center_y],  # 正点
+                [x1 - 2, y1 - 2],      # 负点：左上外扩
+                [x2 + 2, y1 - 2],      # 负点：右上外扩
+                [x1 - 2, y2 + 2],      # 负点：左下外扩
+                [x2 + 2, y2 + 2],      # 负点：右下外扩
+            ]
+            labels = [1, 0, 0, 0, 0]  # 1=正点, 0=负点
+
+            # 调用模型
+            result = self.model(image_pil, points=points, labels=labels, multimask_output=True)
             mx.eval()
 
             if isinstance(result, dict):
                 masks = result.get("masks", None)
                 scores = result.get("iou_predictions", None)
-            else:
-                # 如果返回的是元组或其他格式
-                masks = result[0] if len(result) > 0 else None
+            elif isinstance(result, (list, tuple)) and len(result) > 0:
+                masks = result[0]
                 scores = result[1] if len(result) > 1 else None
+            else:
+                masks = result
+                scores = None
 
         except Exception as e:
-            logger.warning(f"Direct model call failed: {e}, trying alternative approach")
-            # 尝试简单的推理调用
+            logger.warning(f"Point-based model call failed: {e}")
+            # 最后尝试：只用中心点
             try:
-                result = self.model(img_mx, bboxes=bbox_scaled)
+                x1, y1, x2, y2 = bbox_scaled[0]
+                center_x = (x1 + x2) / 2
+                center_y = (y1 + y2) / 2
+
+                result = self.model(image_pil, points=[[center_x, center_y]], labels=[1])
                 mx.eval()
 
                 if isinstance(result, dict):
                     masks = result.get("masks", None)
-                    scores = result.get("scores", None)
+                    scores = result.get("iou_predictions", None)
                 else:
                     masks = result
                     scores = None
+
             except Exception as e2:
                 logger.error(f"All model call attempts failed: {e2}")
                 return None
@@ -431,33 +454,24 @@ class MLXSAM3(SAM3Base):
         bboxes_scaled = bboxes * scale
         boxes_mx = mx.array(bboxes_scaled)
 
-        # 直接批量调用模型
+        # 批量处理 - 逐个处理每个 bbox 然后合并
         try:
-            result = self.model(img_mx, boxes=boxes_mx, multimask_output=True)
-            mx.eval()
+            all_masks = []
+            for bbox in bboxes:
+                single_result = self._direct_inference(image_pil, bbox.reshape(1, 4))
+                if single_result and "masks" in single_result:
+                    all_masks.append(single_result["masks"])
 
-            if isinstance(result, dict):
-                masks = result.get("masks", None)
-                scores = result.get("iou_predictions", None)
-            else:
-                masks = result[0] if len(result) > 0 else None
-                scores = result[1] if len(result) > 1 else None
+            if not all_masks:
+                return None
+
+            # 合并所有 mask
+            combined_mask = np.any(all_masks, axis=0)
+            return {"masks": combined_mask}
 
         except Exception as e:
-            logger.warning(f"Direct batch model call failed: {e}, trying alternative")
-            try:
-                result = self.model(img_mx, bboxes=bboxes_scaled)
-                mx.eval()
-
-                if isinstance(result, dict):
-                    masks = result.get("masks", None)
-                    scores = result.get("scores", None)
-                else:
-                    masks = result
-                    scores = None
-            except Exception as e2:
-                logger.error(f"All batch model calls failed: {e2}")
-                return None
+            logger.error(f"Batch processing failed: {e}")
+            return None
 
         if masks is None:
             return None
