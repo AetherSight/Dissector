@@ -250,7 +250,16 @@ class MLXSAM3(SAM3Base):
 
         logger.info("Loading MLX SAM3 model...")
         self.model = build_sam3_image_model()
-        # 移除锁以避免并行处理时的死锁
+        
+        # 尝试导入 processor
+        try:
+            from sam3.model.sam3_image_processor import Sam3Processor
+            self.processor = Sam3Processor(self.model)
+            self._use_processor = True
+        except Exception as e:
+            logger.warning(f"Could not load Sam3Processor: {e}, will use direct model API")
+            self.processor = None
+            self._use_processor = False
 
     def generate_mask_from_bbox(
         self,
@@ -328,78 +337,70 @@ class MLXSAM3(SAM3Base):
 
 
     def _direct_inference(self, image_pil, bbox):
-        """直接使用 MLX 模型 API 的回退方法"""
+        """使用 processor 或直接模型 API"""
         import mlx.core as mx
 
         h, w = image_pil.size[1], image_pil.size[0]
+        x1, y1, x2, y2 = bbox[0]
 
-        # 预处理
-        img = np.array(image_pil)
-        scale = 1024 / max(h, w)
-        new_h, new_w = int(h * scale), int(w * scale)
-        img = cv2.resize(img, (new_w, new_h))
-        img = (img.astype(np.float32) / 255.0)
-        img_mx = mx.array(img)
-        img_mx = mx.expand_dims(img_mx, 0)
-
-        # 缩放 bbox
-        bbox_scaled = bbox * scale
-        boxes_mx = mx.array(bbox_scaled)
-        boxes_mx = mx.expand_dims(boxes_mx, 0)
-
-        # 将 bbox 转换为点提示，因为 Sam3Image 似乎不支持 bbox 输入
-        try:
-            # 从 bbox 创建点提示（使用中心点作为正提示，四角作为负提示）
-            x1, y1, x2, y2 = bbox_scaled[0]
-            center_x = (x1 + x2) / 2
-            center_y = (y1 + y2) / 2
-
-            # 正点：bbox 中心
-            # 负点：bbox 四个角（稍微外扩）
-            points = [
-                [center_x, center_y],  # 正点
-                [x1 - 2, y1 - 2],      # 负点：左上外扩
-                [x2 + 2, y1 - 2],      # 负点：右上外扩
-                [x1 - 2, y2 + 2],      # 负点：左下外扩
-                [x2 + 2, y2 + 2],      # 负点：右下外扩
-            ]
-            labels = [1, 0, 0, 0, 0]  # 1=正点, 0=负点
-
-            # 调用模型
-            result = self.model(image_pil, points=points, labels=labels, multimask_output=True)
-            mx.eval()
-
-            if isinstance(result, dict):
-                masks = result.get("masks", None)
-                scores = result.get("iou_predictions", None)
-            elif isinstance(result, (list, tuple)) and len(result) > 0:
-                masks = result[0]
-                scores = result[1] if len(result) > 1 else None
-            else:
-                masks = result
-                scores = None
-
-        except Exception as e:
-            logger.warning(f"Point-based model call failed: {e}")
-            # 最后尝试：只用中心点
+        # 尝试使用 processor
+        if self._use_processor and self.processor is not None:
             try:
-                x1, y1, x2, y2 = bbox_scaled[0]
-                center_x = (x1 + x2) / 2
-                center_y = (y1 + y2) / 2
+                # 设置图像
+                state = self.processor.set_image(image_pil)
+                mx.eval(state) if isinstance(state, dict) else mx.eval()
 
-                result = self.model(image_pil, points=[[center_x, center_y]], labels=[1])
-                mx.eval()
+                # 将 bbox 转换为几何提示格式 [center_x, center_y, width, height] (归一化)
+                x1_norm, y1_norm = float(x1 / w), float(y1 / h)
+                x2_norm, y2_norm = float(x2 / w), float(y2 / h)
+                center_x = float((x1_norm + x2_norm) / 2.0)
+                center_y = float((y1_norm + y2_norm) / 2.0)
+                box_width = float(x2_norm - x1_norm)
+                box_height = float(y2_norm - y1_norm)
+                box_list = [center_x, center_y, box_width, box_height]
 
-                if isinstance(result, dict):
-                    masks = result.get("masks", None)
-                    scores = result.get("iou_predictions", None)
-                else:
-                    masks = result
-                    scores = None
+                # 添加几何提示
+                state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
+                mx.eval(state_after_box) if isinstance(state_after_box, dict) else mx.eval()
 
-            except Exception as e2:
-                logger.error(f"All model call attempts failed: {e2}")
-                return None
+                if state_after_box is None:
+                    return None
+
+                # 提取 masks 和 scores
+                if isinstance(state_after_box, dict):
+                    masks_raw = state_after_box.get("masks", None)
+                    scores_raw = state_after_box.get("scores", None)
+
+                    if masks_raw is not None:
+                        masks = np.asarray(masks_raw)
+                        scores = np.asarray(scores_raw) if scores_raw is not None else None
+
+                        # 选择最佳 mask
+                        if masks.ndim == 3 and masks.shape[0] > 0:
+                            if scores is not None and len(scores) == masks.shape[0]:
+                                best_idx = np.argmax(scores)
+                                mask = masks[best_idx]
+                            else:
+                                mask = masks[0]
+                        elif masks.ndim == 2:
+                            mask = masks
+                        else:
+                            return None
+
+                        # 调整尺寸
+                        if mask.shape != (h, w):
+                            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                        else:
+                            mask = mask.astype(bool)
+
+                        return {"masks": mask, "scores": scores}
+
+            except Exception as e:
+                logger.warning(f"Processor-based inference failed: {e}")
+
+        # 回退：返回 None，让上层循环处理
+        logger.error("All MLX inference methods failed, returning None")
+        return None
 
         if masks is None:
             return None
