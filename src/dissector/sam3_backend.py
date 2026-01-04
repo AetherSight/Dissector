@@ -367,7 +367,19 @@ class MLXSAM3(SAM3Base):
             mask_array = np.array(masks) if hasattr(masks, '__array__') else np.array(masks)
         
         if mask_array.ndim == 3:
-            mask = np.any(mask_array, axis=0).astype(bool)
+            scores = None
+            if isinstance(state_after_box, dict):
+                scores_raw = state_after_box.get("scores", None)
+                if scores_raw is not None:
+                    scores = np.array(scores_raw) if hasattr(scores_raw, '__array__') else np.array(scores_raw)
+            
+            if scores is not None and len(scores) == mask_array.shape[0]:
+                best_idx = np.argmax(scores)
+                mask = mask_array[best_idx]
+                logger.debug(f"[MLX] Selected mask {best_idx} with score {scores[best_idx]:.4f}")
+            else:
+                mask = np.any(mask_array, axis=0).astype(bool)
+                logger.debug(f"[MLX] Merged all {mask_array.shape[0]} masks (no scores available)")
         elif mask_array.ndim == 2:
             mask = mask_array.astype(bool)
         else:
@@ -377,6 +389,9 @@ class MLXSAM3(SAM3Base):
         
         if mask.ndim == 1:
             mask = mask.reshape((h, w))
+        
+        while mask.ndim > 2:
+            mask = mask[0]
         
         logger.debug(f"[MLX] Mask converted, dtype: {mask.dtype}, shape: {mask.shape}, min: {mask.min()}, max: {mask.max()}")
         
