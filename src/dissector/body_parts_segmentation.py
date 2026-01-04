@@ -119,6 +119,7 @@ BODY_PARTS_PROMPTS = {
         "clothing lining",
     ],
     "lower": [
+        # 核心下装（优先处理）
         "pants",
         "trousers",
         "jeans",
@@ -128,6 +129,7 @@ BODY_PARTS_PROMPTS = {
         "tights",
         "pant legs",
         "trouser legs",
+        # 内衬
         "lining",
         "inner lining",
     ],
@@ -142,46 +144,7 @@ BODY_PARTS_PROMPTS = {
         "flat shoe",
     ],
     "head": [
-        "head hair accessory",
-        "head accessory",
-        "hair accessory",
-        "hair flower",
-        "flower hair accessory",
-        "headwear",
-        "headpiece",
-        "headdress",
-        "hat",
-        "ear",
-        "ears",
-        "human ear",
-        "earlobe",
-        "ear lobe",
-        "ear accessory",
-        "earring",
-        "earrings",
-        "ear jewelry",
-        "cap",
-        "helmet",
-        "crown",
-        "tiara",
-        "headband",
-        "hood",
-        "hair ornament",
-        "hair clip",
-        "hairpin",
-        "hair band",
-        "hair ribbon",
-        "hair bow",
-        "wig",
-        "turban",
-        "beret",
-        "beanie",
-        "bonnet",
-        "visor",
-        "baseball cap",
-        "head wrap",
-        "bandana",
-        "veil",
+        # 核心头部和脸部（优先处理）
         "head",
         "human head",
         "face",
@@ -198,6 +161,49 @@ BODY_PARTS_PROMPTS = {
         "hair",
         "hairstyle",
         "ponytail hair",
+        # 头部配饰
+        "headwear",
+        "headpiece",
+        "headdress",
+        "hat",
+        "cap",
+        "helmet",
+        "crown",
+        "tiara",
+        "headband",
+        "hood",
+        "wig",
+        "turban",
+        "beret",
+        "beanie",
+        "bonnet",
+        "visor",
+        "baseball cap",
+        "head wrap",
+        "bandana",
+        "veil",
+        # 头发配饰
+        "head hair accessory",
+        "head accessory",
+        "hair accessory",
+        "hair flower",
+        "flower hair accessory",
+        "hair ornament",
+        "hair clip",
+        "hairpin",
+        "hair band",
+        "hair ribbon",
+        "hair bow",
+        # 耳部
+        "ear",
+        "ears",
+        "human ear",
+        "earlobe",
+        "ear lobe",
+        "ear accessory",
+        "earring",
+        "earrings",
+        "ear jewelry",
         "cat ear",
         "animal ear",
     ],
@@ -412,20 +418,40 @@ def segment_body_parts_with_sam3(
                 logger.info(f"MLX: {part_name} prompts batched into {len(batched_prompts)} groups")
                 
                 mask_total = None
-                for batch_prompt in batched_prompts:
+                successful_batches = 0
+                failed_batches = 0
+                
+                for i, batch_prompt in enumerate(batched_prompts):
                     try:
                         batch_mask = sam3_model.generate_mask_from_text_prompt(
                             image_pil=image_pil,
                             text_prompt=batch_prompt,
                         )
                         if batch_mask is not None and batch_mask.size > 0:
-                            if mask_total is None:
-                                mask_total = batch_mask.copy()
+                            mask_pixels = np.sum(batch_mask)
+                            if mask_pixels > 0:
+                                if mask_total is None:
+                                    mask_total = batch_mask.copy()
+                                else:
+                                    mask_total |= batch_mask
+                                successful_batches += 1
+                                logger.debug(f"MLX: {part_name} batch {i+1}/{len(batched_prompts)} succeeded, mask pixels: {mask_pixels}")
                             else:
-                                mask_total |= batch_mask
+                                failed_batches += 1
+                                logger.debug(f"MLX: {part_name} batch {i+1}/{len(batched_prompts)} returned empty mask")
+                        else:
+                            failed_batches += 1
+                            logger.debug(f"MLX: {part_name} batch {i+1}/{len(batched_prompts)} returned None or empty")
                     except Exception as e:
-                        logger.warning(f"Error with batch prompt '{batch_prompt[:50]}...': {e}")
+                        failed_batches += 1
+                        logger.warning(f"MLX: {part_name} batch {i+1}/{len(batched_prompts)} error with prompt '{batch_prompt[:50]}...': {e}")
                         continue
+                
+                if mask_total is not None and mask_total.size > 0:
+                    total_pixels = np.sum(mask_total)
+                    logger.info(f"MLX: {part_name} completed: {successful_batches} successful, {failed_batches} failed batches, total mask pixels: {total_pixels}")
+                else:
+                    logger.warning(f"MLX: {part_name} failed: no valid mask generated from {len(batched_prompts)} batches")
                 
                 mask = mask_total
                 
@@ -468,8 +494,8 @@ def segment_body_parts_with_sam3(
                     logger.warning(f"DINO not available for {part_name} (Ultralytics backend)")
                     mask = None
             
-            if mask is None or mask.size == 0:
-                logger.warning(f"No mask found for {part_name}")
+            if mask is None or mask.size == 0 or np.sum(mask) == 0:
+                logger.warning(f"No valid mask found for {part_name} (mask is None or empty)")
                 # 存储空 mask
                 masks_dict[part_name] = np.zeros((h, w), dtype=bool)
                 continue
