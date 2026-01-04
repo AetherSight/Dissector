@@ -250,8 +250,7 @@ class MLXSAM3(SAM3Base):
 
         logger.info("Loading MLX SAM3 model...")
         self.model = build_sam3_image_model()
-        # Sam3Processor 可能不是可调用的，让我们直接使用模型
-        self._lock = threading.Lock()
+        # 移除锁以避免并行处理时的死锁
 
     def generate_mask_from_bbox(
         self,
@@ -262,8 +261,7 @@ class MLXSAM3(SAM3Base):
         h, w = image_pil.size[1], image_pil.size[0]
 
         # 直接使用模型API，避免processor调用问题
-        with self._lock:
-            result = self._direct_inference(image_pil, bbox)
+        result = self._direct_inference(image_pil, bbox)
 
         if not isinstance(result, dict) or "masks" not in result:
             return None
@@ -305,8 +303,7 @@ class MLXSAM3(SAM3Base):
         h, w = image_pil.size[1], image_pil.size[0]
 
         # 直接使用批量API
-        with self._lock:
-            result = self._direct_batch_inference(image_pil, bboxes)
+        result = self._direct_batch_inference(image_pil, bboxes)
 
         if not isinstance(result, dict) or "masks" not in result:
             return None
@@ -351,19 +348,18 @@ class MLXSAM3(SAM3Base):
         boxes_mx = mx.expand_dims(boxes_mx, 0)
 
         # 推理
-        with self._lock:
-            source_encoded = self.model.image_encoder(img_mx)
-            sparse_emb, dense_emb = self.model.prompt_encoder(
-                points=None, boxes=boxes_mx, masks=None
-            )
-            low_res_masks, iou_preds, _ = self.model.mask_decoder(
-                image_embeddings=source_encoded,
-                image_pe=self.model.prompt_encoder.get_dense_pe(),
-                sparse_prompt_embeddings=sparse_emb,
-                dense_prompt_embeddings=dense_emb,
-                multimask_output=True,
-            )
-            mx.eval(low_res_masks, iou_preds)
+        source_encoded = self.model.image_encoder(img_mx)
+        sparse_emb, dense_emb = self.model.prompt_encoder(
+            points=None, boxes=boxes_mx, masks=None
+        )
+        low_res_masks, iou_preds, _ = self.model.mask_decoder(
+            image_embeddings=source_encoded,
+            image_pe=self.model.prompt_encoder.get_dense_pe(),
+            sparse_prompt_embeddings=sparse_emb,
+            dense_prompt_embeddings=dense_emb,
+            multimask_output=True,
+        )
+        mx.eval(low_res_masks, iou_preds)
 
         # 转换为 numpy
         masks = np.array(low_res_masks[0, 0])  # (3, 256, 256)
@@ -398,19 +394,18 @@ class MLXSAM3(SAM3Base):
         boxes_mx = mx.array(bboxes_scaled)
 
         # 批量推理
-        with self._lock:
-            source_encoded = self.model.image_encoder(img_mx)
-            sparse_emb, dense_emb = self.model.prompt_encoder(
-                points=None, boxes=boxes_mx, masks=None
-            )
-            low_res_masks, iou_preds, _ = self.model.mask_decoder(
-                image_embeddings=source_encoded,
-                image_pe=self.model.prompt_encoder.get_dense_pe(),
-                sparse_prompt_embeddings=sparse_emb,
-                dense_prompt_embeddings=dense_emb,
-                multimask_output=True,
-            )
-            mx.eval(low_res_masks, iou_preds)
+        source_encoded = self.model.image_encoder(img_mx)
+        sparse_emb, dense_emb = self.model.prompt_encoder(
+            points=None, boxes=boxes_mx, masks=None
+        )
+        low_res_masks, iou_preds, _ = self.model.mask_decoder(
+            image_embeddings=source_encoded,
+            image_pe=self.model.prompt_encoder.get_dense_pe(),
+            sparse_prompt_embeddings=sparse_emb,
+            dense_prompt_embeddings=dense_emb,
+            multimask_output=True,
+        )
+        mx.eval(low_res_masks, iou_preds)
 
         # 转换为 numpy 并合并
         # low_res_masks: (1, N, 3, 256, 256)
