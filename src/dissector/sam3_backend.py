@@ -238,7 +238,7 @@ class UltralyticsSAM3(SAM3Base):
 class MLXSAM3(SAM3Base):
     _gpu_lock = threading.Lock()
 
-    def __init__(self):
+    def __init__(self, model_path: Optional[str] = None):
         from sam3 import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
 
