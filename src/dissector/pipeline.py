@@ -412,6 +412,23 @@ def process_image(
     image_pil = Image.fromarray(image_rgb)
     h, w = image_rgb.shape[:2]
 
+    # MLX 后端直接使用 segment_body_parts_with_sam3，不使用 DINO
+    if sam3_model.backend_name == "mlx":
+        logger.info("[PERF] MLX backend: using segment_body_parts_with_sam3 (no DINO)")
+        segment_start = time.time()
+        results = segment_body_parts_with_sam3(
+            image_pil=image_pil,
+            sam3_model=sam3_model,
+            processor=None,  # MLX 不需要 DINO
+            dino_model=None,
+            device=None,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+        )
+        segment_time = time.time() - segment_start
+        logger.info(f"[PERF] MLX segment_body_parts_with_sam3: {segment_time:.2f}s")
+        return results
+
     masks: Dict[str, np.ndarray] = {}
 
     def detect_and_store(key: str, prompts: List[str]):
