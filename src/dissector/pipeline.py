@@ -520,18 +520,27 @@ def process_image(
         detect_and_store(key, prompts)
         return key, masks.get(key, np.zeros((h, w), dtype=bool))
 
-    logger.info("[STEP] Stage 1: detecting shoes, head, lower_raw, upper_raw (parallel)...")
+    use_parallel = sam3_model.backend_name != "mlx"
+    if use_parallel:
+        logger.info("[STEP] Stage 1: detecting shoes, head, lower_raw, upper_raw (parallel)...")
+    else:
+        logger.info("[STEP] Stage 1: detecting shoes, head, lower_raw, upper_raw (serial)...")
     stage1_start = time.time()
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {
-            executor.submit(process_sam3, "shoes", FOOTWEAR_PROMPTS): "shoes",
-            executor.submit(process_sam3, "head", HEADWEAR_PROMPTS): "head",
-            executor.submit(process_sam3, "lower_raw", LOWER_PROMPTS): "lower_raw",
-            executor.submit(process_sam3, "upper_raw", UPPER_PROMPTS): "upper_raw",
-        }
-        for future in as_completed(futures):
-            key, mask = future.result()
-            masks[key] = mask
+    if use_parallel:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {
+                executor.submit(process_sam3, "shoes", FOOTWEAR_PROMPTS): "shoes",
+                executor.submit(process_sam3, "head", HEADWEAR_PROMPTS): "head",
+                executor.submit(process_sam3, "lower_raw", LOWER_PROMPTS): "lower_raw",
+                executor.submit(process_sam3, "upper_raw", UPPER_PROMPTS): "upper_raw",
+            }
+            for future in as_completed(futures):
+                key, mask = future.result()
+                masks[key] = mask
+    else:
+        for key, prompts in [("shoes", FOOTWEAR_PROMPTS), ("head", HEADWEAR_PROMPTS), ("lower_raw", LOWER_PROMPTS), ("upper_raw", UPPER_PROMPTS)]:
+            key_result, mask = process_sam3(key, prompts)
+            masks[key_result] = mask
     logger.info(f"[PERF] Stage 1 completed: {time.time()-stage1_start:.2f}s")
     
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
@@ -569,16 +578,24 @@ def process_image(
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
-    logger.info("[STEP] Stage 2: detecting legs and hands (parallel)...")
+    if use_parallel:
+        logger.info("[STEP] Stage 2: detecting legs and hands (parallel)...")
+    else:
+        logger.info("[STEP] Stage 2: detecting legs and hands (serial)...")
     stage2_start = time.time()
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {
-            executor.submit(process_sam3, "legs", LEG_PROMPTS): "legs",
-            executor.submit(process_sam3, "hands", HAND_PROMPTS): "hands",
-        }
-        for future in as_completed(futures):
-            key, mask = future.result()
-            masks[key] = mask
+    if use_parallel:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {
+                executor.submit(process_sam3, "legs", LEG_PROMPTS): "legs",
+                executor.submit(process_sam3, "hands", HAND_PROMPTS): "hands",
+            }
+            for future in as_completed(futures):
+                key, mask = future.result()
+                masks[key] = mask
+    else:
+        for key, prompts in [("legs", LEG_PROMPTS), ("hands", HAND_PROMPTS)]:
+            key_result, mask = process_sam3(key, prompts)
+            masks[key_result] = mask
     logger.info(f"[PERF] Stage 2 completed: {time.time()-stage2_start:.2f}s")
     
     leg_mask = masks.get("legs", np.zeros(image_rgb.shape[:2], dtype=bool))
