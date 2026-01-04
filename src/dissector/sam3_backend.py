@@ -262,22 +262,31 @@ class MLXSAM3(SAM3Base):
         """从边界框生成 mask，与 UltralyticsSAM3 行为一致"""
         h, w = image_pil.size[1], image_pil.size[0]
 
-        # 转换为点提示（与 Ultralytics 行为对齐）
-        x1, y1, x2, y2 = bbox[0]
-        points, labels = self._box_to_points(x1, y1, x2, y2, w, h)
-
+        # 直接使用 bbox，就像 Ultralytics 一样
         with self._lock:
             try:
+                # 尝试直接使用 bbox
                 result = self.processor(
                     image=image_pil,
-                    points=points,
-                    labels=labels,
+                    bboxes=bbox,  # 直接传递 bbox，与 Ultralytics 一致
                     multimask_output=True,
                 )
             except Exception as e:
-                logger.warning(f"MLX processor failed: {e}, falling back to direct API")
-                # 回退到直接 API
-                result = self._direct_inference(image_pil, bbox)
+                logger.warning(f"MLX processor with bboxes failed: {e}, trying points")
+                try:
+                    # 回退到点提示
+                    x1, y1, x2, y2 = bbox[0]
+                    points, labels = self._box_to_points(x1, y1, x2, y2, w, h)
+                    result = self.processor(
+                        image=image_pil,
+                        points=points,
+                        labels=labels,
+                        multimask_output=True,
+                    )
+                except Exception as e2:
+                    logger.warning(f"MLX processor with points also failed: {e2}, falling back to direct API")
+                    # 回退到直接 API
+                    result = self._direct_inference(image_pil, bbox)
 
         if not isinstance(result, dict) or "masks" not in result:
             return None
@@ -318,19 +327,50 @@ class MLXSAM3(SAM3Base):
 
         h, w = image_pil.size[1], image_pil.size[0]
 
-        # 收集所有 mask
-        all_masks = []
-        for bbox in bboxes:
-            mask = self.generate_mask_from_bbox(image_pil, bbox.reshape(1, 4))
-            if mask is not None:
-                all_masks.append(mask)
+        # 直接使用 bboxes，就像 Ultralytics 一样
+        with self._lock:
+            try:
+                result = self.processor(
+                    image=image_pil,
+                    bboxes=bboxes,  # 直接传递所有 bboxes，与 Ultralytics 一致
+                    multimask_output=True,
+                )
+            except Exception as e:
+                logger.warning(f"MLX processor batch bboxes failed: {e}, falling back to direct API")
+                # 回退到直接 API
+                result = self._direct_batch_inference(image_pil, bboxes)
 
-        if not all_masks:
-            return np.zeros((h, w), dtype=bool)
+        if not isinstance(result, dict) or "masks" not in result:
+            return None
 
-        # 合并所有 mask（与 Ultralytics 的 np.any 行为一致）
-        combined_mask = np.any(all_masks, axis=0).astype(bool)
-        return combined_mask
+        masks = np.asarray(result["masks"])
+
+        # 与 Ultralytics 完全一致：使用 np.any 合并所有 mask
+        if masks.ndim == 3:
+            # (N, H, W) 或 (N*3, H, W) 的情况，直接合并
+            mask = np.any(masks, axis=0).astype(bool)
+        elif masks.ndim == 4:
+            # (N, 3, H, W) 的情况，合并所有维度
+            mask = np.any(masks, axis=(0, 1)).astype(bool)
+        elif masks.ndim == 2:
+            mask = masks.astype(bool)
+        else:
+            mask = masks.squeeze()
+            if mask.ndim == 3:
+                mask = np.any(mask, axis=0).astype(bool)
+            elif mask.ndim == 2:
+                mask = mask.astype(bool)
+            else:
+                return None
+
+        if mask.ndim != 2:
+            return None
+
+        # 调整到原始尺寸
+        if mask.shape != (h, w):
+            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+
+        return mask
 
     @staticmethod
     def _box_to_points(x1, y1, x2, y2, w, h):
@@ -396,6 +436,66 @@ class MLXSAM3(SAM3Base):
         mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
 
         return {"masks": mask, "scores": scores}
+
+    def _direct_batch_inference(self, image_pil, bboxes):
+        """直接使用 MLX 模型 API 的批量回退方法"""
+        import mlx.core as mx
+
+        h, w = image_pil.size[1], image_pil.size[0]
+
+        # 预处理
+        img = np.array(image_pil)
+        scale = 1024 / max(h, w)
+        new_h, new_w = int(h * scale), int(w * scale)
+        img = cv2.resize(img, (new_w, new_h))
+        img = (img.astype(np.float32) / 255.0)
+        img_mx = mx.array(img)
+        img_mx = mx.expand_dims(img_mx, 0)
+
+        # 缩放所有 bboxes
+        bboxes_scaled = bboxes * scale
+        boxes_mx = mx.array(bboxes_scaled)
+
+        # 批量推理
+        with self._lock:
+            source_encoded = self.model.image_encoder(img_mx)
+            sparse_emb, dense_emb = self.model.prompt_encoder(
+                points=None, boxes=boxes_mx, masks=None
+            )
+            low_res_masks, iou_preds, _ = self.model.mask_decoder(
+                image_embeddings=source_encoded,
+                image_pe=self.model.prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse_emb,
+                dense_prompt_embeddings=dense_emb,
+                multimask_output=True,
+            )
+            mx.eval(low_res_masks, iou_preds)
+
+        # 转换为 numpy 并合并
+        # low_res_masks: (1, N, 3, 256, 256)
+        # iou_preds: (1, N, 3)
+        masks = np.array(low_res_masks[0])  # (N, 3, 256, 256)
+        scores = np.array(iou_preds[0])     # (N, 3)
+
+        # 对每个 bbox 选择最佳 mask，然后合并
+        final_masks = []
+        for i in range(len(bboxes)):
+            bbox_masks = masks[i]  # (3, 256, 256)
+            bbox_scores = scores[i]  # (3,)
+            best_idx = np.argmax(bbox_scores)
+            mask = bbox_masks[best_idx] > 0  # (256, 256)
+            final_masks.append(mask)
+
+        # 合并所有 bbox 的 mask
+        if final_masks:
+            combined_mask = np.any(final_masks, axis=0)  # (256, 256)
+        else:
+            combined_mask = np.zeros((256, 256), dtype=bool)
+
+        # 调整尺寸
+        combined_mask = cv2.resize(combined_mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+
+        return {"masks": combined_mask}
 
     @property
     def backend_name(self) -> str:
