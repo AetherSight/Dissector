@@ -247,11 +247,10 @@ class MLXSAM3(SAM3Base):
             device: 设备类型（兼容接口，无实际作用）
         """
         from sam3 import build_sam3_image_model
-        from sam3.model.sam3_image_processor import Sam3Processor
 
         logger.info("Loading MLX SAM3 model...")
         self.model = build_sam3_image_model()
-        self.processor = Sam3Processor(self.model)
+        # Sam3Processor 可能不是可调用的，让我们直接使用模型
         self._lock = threading.Lock()
 
     def generate_mask_from_bbox(
@@ -259,34 +258,12 @@ class MLXSAM3(SAM3Base):
         image_pil: Image.Image,
         bbox: np.ndarray,
     ) -> Optional[np.ndarray]:
-        """从边界框生成 mask，与 UltralyticsSAM3 行为一致"""
+        """从边界框生成 mask，直接使用模型API"""
         h, w = image_pil.size[1], image_pil.size[0]
 
-        # 直接使用 bbox，就像 Ultralytics 一样
+        # 直接使用模型API，避免processor调用问题
         with self._lock:
-            try:
-                # 尝试直接使用 bbox
-                result = self.processor(
-                    image=image_pil,
-                    bboxes=bbox,  # 直接传递 bbox，与 Ultralytics 一致
-                    multimask_output=True,
-                )
-            except Exception as e:
-                logger.warning(f"MLX processor with bboxes failed: {e}, trying points")
-                try:
-                    # 回退到点提示
-                    x1, y1, x2, y2 = bbox[0]
-                    points, labels = self._box_to_points(x1, y1, x2, y2, w, h)
-                    result = self.processor(
-                        image=image_pil,
-                        points=points,
-                        labels=labels,
-                        multimask_output=True,
-                    )
-                except Exception as e2:
-                    logger.warning(f"MLX processor with points also failed: {e2}, falling back to direct API")
-                    # 回退到直接 API
-                    result = self._direct_inference(image_pil, bbox)
+            result = self._direct_inference(image_pil, bbox)
 
         if not isinstance(result, dict) or "masks" not in result:
             return None
@@ -320,25 +297,16 @@ class MLXSAM3(SAM3Base):
         image_pil: Image.Image,
         bboxes: np.ndarray,
     ) -> Optional[np.ndarray]:
-        """批量从边界框生成 mask，与 UltralyticsSAM3 行为一致"""
+        """批量从边界框生成 mask，直接使用模型API"""
         if bboxes.size == 0:
             h, w = image_pil.size[1], image_pil.size[0]
             return np.zeros((h, w), dtype=bool)
 
         h, w = image_pil.size[1], image_pil.size[0]
 
-        # 直接使用 bboxes，就像 Ultralytics 一样
+        # 直接使用批量API
         with self._lock:
-            try:
-                result = self.processor(
-                    image=image_pil,
-                    bboxes=bboxes,  # 直接传递所有 bboxes，与 Ultralytics 一致
-                    multimask_output=True,
-                )
-            except Exception as e:
-                logger.warning(f"MLX processor batch bboxes failed: {e}, falling back to direct API")
-                # 回退到直接 API
-                result = self._direct_batch_inference(image_pil, bboxes)
+            result = self._direct_batch_inference(image_pil, bboxes)
 
         if not isinstance(result, dict) or "masks" not in result:
             return None
@@ -346,22 +314,11 @@ class MLXSAM3(SAM3Base):
         masks = np.asarray(result["masks"])
 
         # 与 Ultralytics 完全一致：使用 np.any 合并所有 mask
-        if masks.ndim == 3:
-            # (N, H, W) 或 (N*3, H, W) 的情况，直接合并
-            mask = np.any(masks, axis=0).astype(bool)
-        elif masks.ndim == 4:
-            # (N, 3, H, W) 的情况，合并所有维度
-            mask = np.any(masks, axis=(0, 1)).astype(bool)
-        elif masks.ndim == 2:
+        if masks.ndim == 2:
             mask = masks.astype(bool)
         else:
-            mask = masks.squeeze()
-            if mask.ndim == 3:
-                mask = np.any(mask, axis=0).astype(bool)
-            elif mask.ndim == 2:
-                mask = mask.astype(bool)
-            else:
-                return None
+            # 合并所有 mask
+            mask = np.any(masks, axis=0).astype(bool)
 
         if mask.ndim != 2:
             return None
@@ -372,22 +329,6 @@ class MLXSAM3(SAM3Base):
 
         return mask
 
-    @staticmethod
-    def _box_to_points(x1, y1, x2, y2, w, h):
-        """将 bbox 转换为点提示（正点 + 负点）"""
-        eps = 2
-        neg = 4
-
-        points = [
-            [x1 + eps, y1 + eps],      # 左上角正点
-            [x2 - eps, y1 + eps],      # 右上角正点
-            [x1 + eps, y2 - eps],      # 左下角正点
-            [x2 - eps, y2 - eps],      # 右下角正点
-            [max(0, x1 - neg), max(0, y1 - neg)],        # 左上负点
-            [min(w - 1, x2 + neg), min(h - 1, y2 + neg)], # 右下负点
-        ]
-        labels = [1, 1, 1, 1, 0, 0]  # 正点在前，负点在后
-        return points, labels
 
     def _direct_inference(self, image_pil, bbox):
         """直接使用 MLX 模型 API 的回退方法"""
