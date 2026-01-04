@@ -11,6 +11,8 @@ logging.getLogger("transformers.image_processing_utils").setLevel(logging.WARNIN
 logging.getLogger("httpx").setLevel(logging.ERROR)
 logging.getLogger("httpcore").setLevel(logging.ERROR)
 logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.ERROR)
+logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
 
 import cv2
 import numpy as np
@@ -145,11 +147,11 @@ def load_models(
     # Disable downloading optional files to avoid 404 requests
     processor = AutoProcessor.from_pretrained(
         dino_model_name,
-        local_files_only=False,
+        local_files_only=True,
     )
     dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
         dino_model_name,
-        local_files_only=False,
+        local_files_only=True,
     ).to(device)
     
     # 自动检测设备类型用于 Ultralytics
