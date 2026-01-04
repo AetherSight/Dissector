@@ -377,14 +377,43 @@ class MLXSAM3(SAM3Base):
                             masks = np.asarray(masks_raw)
                             scores = np.asarray(scores_raw) if scores_raw is not None else None
 
-                            # 选择最佳 mask
-                            if masks.ndim == 3 and masks.shape[0] > 0:
+                            # 处理不同维度的 masks
+                            if masks.ndim == 4:
+                                # (N, 1, H, W) 或 (N, M, H, W) - 取第一个 batch，选择最佳 mask
+                                if masks.shape[0] > 0:
+                                    masks = masks[0]  # (1, H, W) 或 (M, H, W)
+                                    if masks.ndim == 3 and masks.shape[0] > 1:
+                                        # (M, H, W) - 多个 mask，选择最佳
+                                        if scores is not None:
+                                            scores_flat = scores.flatten() if scores.ndim > 1 else scores
+                                            if len(scores_flat) >= masks.shape[0]:
+                                                best_idx = np.argmax(scores_flat[:masks.shape[0]])
+                                                mask = masks[best_idx]
+                                            else:
+                                                mask = masks[0]
+                                        else:
+                                            mask = masks[0]
+                                    elif masks.ndim == 3 and masks.shape[0] == 1:
+                                        # (1, H, W)
+                                        mask = masks[0]
+                                    elif masks.ndim == 2:
+                                        # (H, W)
+                                        mask = masks
+                                    else:
+                                        logger.debug(f"Invalid 4D masks shape after squeeze: {masks.shape}")
+                                        return None
+                                else:
+                                    logger.debug(f"Empty 4D masks: {masks.shape}")
+                                    return None
+                            elif masks.ndim == 3 and masks.shape[0] > 0:
+                                # (M, H, W) - 多个 mask，选择最佳
                                 if scores is not None and len(scores) == masks.shape[0]:
                                     best_idx = np.argmax(scores)
                                     mask = masks[best_idx]
                                 else:
                                     mask = masks[0]
                             elif masks.ndim == 2:
+                                # (H, W) - 单个 mask
                                 mask = masks
                             else:
                                 logger.debug(f"Invalid masks shape: {masks.shape if hasattr(masks, 'shape') else type(masks)}")
