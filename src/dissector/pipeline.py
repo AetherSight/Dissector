@@ -25,7 +25,7 @@ from PIL import Image
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 from .sam3_backend import SAM3Factory, SAM3Base
-from .body_parts_segmentation import segment_body_parts_with_sam3
+from .body_parts_segmentation import segment_body_parts_with_sam3, BODY_PARTS_PROMPTS
 
 
 def get_device() -> torch.device:
@@ -43,91 +43,12 @@ def get_device() -> torch.device:
     else:
         return torch.device("cpu")
 
-HEADWEAR_PROMPTS: List[str] = [
-    "head",
-    "human head",
-    "face",
-    "facial area",
-    "hair",
-    "hairstyle",
-    "ponytail hair",
-    "cat ear",
-    "animal ear",
-    "headwear",
-    "hat",
-    "cap",
-    "helmet",
-    "crown",
-    "tiara",
-    "headband",
-    "hood",
-]
-
-UPPER_PROMPTS: List[str] = [
-    "upper body clothing",
-    "upper garment",
-    "top",
-    "shirt",
-    "blouse",
-    "jacket",
-    "coat",
-    "sweater",
-    "cardigan",
-    "hoodie",
-    "tunic",
-    "vest",
-    "armor chest",
-    "breastplate",
-    "dress bodice",
-    "dress top",
-    "upper part of dress",
-    "sleeve",
-    "long sleeve",
-    "short sleeve",
-    "arm guard",
-    "bracer",
-    "arm band",
-    "arm accessory",
-    "belt",
-    "waistband",
-    "waist belt",
-    "garment body",
-    "clothing fabric",
-    "inner lining",
-]
-
-LOWER_PROMPTS: List[str] = [
-    "pants",
-    "trousers",
-    "jeans",
-    "slacks",
-    "shorts",
-    "leggings",
-    "tights",
-    "pant legs",
-    "trouser legs",
-]
-
-FOOTWEAR_PROMPTS: List[str] = [
-    "shoe",
-    "shoes",
-    "boot",
-    "boots",
-    "sandal",
-    "sneaker",
-    "high heel",
-    "flat shoe",
-]
-
-HAND_PROMPTS: List[str] = [
-    "human hand",
-    "hands",
-    "palm",
-    "fingers",
-    "bare hand",
-    "bare fingers",
-]
-
+# 从 body_parts_segmentation 导入统一的提示词源
+HEADWEAR_PROMPTS = BODY_PARTS_PROMPTS["head"]
+UPPER_PROMPTS = BODY_PARTS_PROMPTS["upper"]
+LOWER_PROMPTS = BODY_PARTS_PROMPTS["lower"]
+FOOTWEAR_PROMPTS = BODY_PARTS_PROMPTS["shoes"]
+HAND_PROMPTS = BODY_PARTS_PROMPTS["hands"]
 LEG_PROMPTS: List[str] = [
     "leg",
     "legs",
@@ -514,20 +435,108 @@ def process_image(
         logger.info(f"[PERF] {key}: DINO={dino_time:.2f}s, SAM3={sam3_time:.2f}s, boxes={len(boxes)}")
     
     step_start = time.time()
-    all_prompts = FOOTWEAR_PROMPTS + LOWER_PROMPTS + HEADWEAR_PROMPTS + UPPER_PROMPTS + HAND_PROMPTS + LEG_PROMPTS
-    all_dino_res = run_grounding_dino(
-        image_pil=image_pil,
-        prompts=all_prompts,
-        processor=processor,
-        dino_model=dino_model,
-        device=device,
-        box_threshold=box_threshold,
-        text_threshold=text_threshold,
-    )
-    all_boxes = all_dino_res["boxes"].cpu().numpy() if "boxes" in all_dino_res else np.array([])
-    all_labels = all_dino_res.get("labels", []) if "labels" in all_dino_res else []
-    batch_dino_time = time.time() - step_start
-    logger.info(f"[PERF] Batch DINO: {batch_dino_time:.2f}s, total boxes={len(all_boxes)}, labels={len(all_labels) if all_labels else 0}")
+    # 尝试统一使用文本提示词叠加方式，不使用 DINO 批量检测
+    use_dino_batch = False  # 暂时禁用 DINO 批量检测，尝试文本提示词叠加
+    
+    if False:  # 禁用 DINO 批量检测
+        batch_prompts = (
+            # 整个人体
+            ["person", "human", "human body"] +
+
+            # shoes: 核心鞋类
+            ["shoe", "boot", "sneaker", "sandal"] +
+
+            # lower: 核心下装
+            ["pants", "trousers", "jeans", "shorts", "leggings"] +
+
+            # head: 头部、脸部、头发、头饰、耳部（精简但保留关键）
+            ["head", "human head", "face", "facial area", "hair accessory", "hair flower",
+            "hair", "hairstyle", "ponytail hair",
+            "hat", "cap", "helmet", "hood",
+            "headwear", "headpiece", "head accessory",
+            "hair accessory", "hair clip", "hairpin",
+            "wig", "beret", "beanie", "visor",
+            "bandana",
+            "ear", "ears", "human ear", "earring", "ear accessory",
+            "forehead", "cheek", "chin", "jaw"] +
+
+            # upper: 核心上装（包含下摆 / 长款 / 外袍）
+            ["upper body clothing", "upper garment", "top",
+            "shirt", "blouse", "jacket", "coat", "sweater", "hoodie",
+            "long coat", "long jacket", "robe", "tunic",
+            "sleeve", "long sleeve", "short sleeve",
+            "collar", "neckline", "scarf", "necklace",
+            "belt", "waistband",
+            "hem", "garment hem", "clothing hem", "bottom hem", "lower edge of clothing",
+            "lining", "inner lining"] +
+
+            # hands: 手部
+            ["hand", "hands", "human hand", "palm", "fingers"] +
+
+            # legs: 腿部
+            ["leg", "legs", "human leg", "thigh"]
+        )
+
+ 
+        all_dino_res = run_grounding_dino(
+            image_pil=image_pil,
+            prompts=batch_prompts,
+            processor=processor,
+            dino_model=dino_model,
+            device=device,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+        )
+        all_boxes = all_dino_res["boxes"].cpu().numpy() if "boxes" in all_dino_res else np.array([])
+        all_labels = all_dino_res.get("labels", []) if "labels" in all_dino_res else []
+        batch_dino_time = time.time() - step_start
+        logger.info(f"[PERF] Batch DINO: {batch_dino_time:.2f}s, total boxes={len(all_boxes)}, labels={len(all_labels) if all_labels else 0}")
+        
+        # 临时调试：保存 DINO 检测结果的可视化
+        if len(all_boxes) > 0:
+            import tempfile
+            import os
+            debug_dir = tempfile.gettempdir()
+            
+            # 在原图上绘制边界框和标签
+            dino_vis = image_bgr.copy()
+            for i, box in enumerate(all_boxes):
+                x1, y1, x2, y2 = box.astype(int)
+                # 绘制边界框
+                cv2.rectangle(dino_vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                # 绘制标签
+                label = all_labels[i] if i < len(all_labels) and all_labels[i] else f"box_{i}"
+                # 计算文本大小
+                (text_width, text_height), baseline = cv2.getTextSize(
+                    label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                )
+                # 绘制文本背景
+                cv2.rectangle(
+                    dino_vis,
+                    (x1, y1 - text_height - baseline - 5),
+                    (x1 + text_width, y1),
+                    (0, 255, 0),
+                    -1
+                )
+                # 绘制文本
+                cv2.putText(
+                    dino_vis,
+                    label,
+                    (x1, y1 - baseline - 2),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 0, 0),
+                    1
+                )
+            
+            dino_vis_path = os.path.join(debug_dir, "dino_detection_result.png")
+            cv2.imwrite(dino_vis_path, dino_vis)
+            logger.info(f"[DEBUG] Saved DINO detection visualization to: {dino_vis_path}")
+    else:
+        # MLX backend 不使用 DINO，直接使用文本提示词
+        all_boxes = np.array([])
+        all_labels = []
+        logger.info("[PERF] MLX backend: skipping DINO batch detection, using text prompts directly")
     
     use_batch = len(all_boxes) > 0
     if use_batch and len(all_labels) != len(all_boxes):
@@ -619,6 +628,7 @@ def process_image(
     logger.info(f"[PERF] Stage 1 completed: {time.time()-stage1_start:.2f}s")
     
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
+    
     if np.any(head_mask):
         kernel = np.ones((15, 15), np.uint8)
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
@@ -630,11 +640,31 @@ def process_image(
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_mask_current = masks.get("lower", np.zeros_like(upper_mask))
     
+    # 临时调试：保存 upper 的原始检测 mask（后处理前）
+    if np.any(upper_mask):
+        import tempfile
+        import os
+        debug_dir = tempfile.gettempdir()
+        upper_raw_vis = (upper_mask.astype(np.uint8) * 255)
+        upper_raw_path = os.path.join(debug_dir, "upper_mask_raw.png")
+        cv2.imwrite(upper_raw_path, upper_raw_vis)
+        logger.info(f"[DEBUG] Saved upper raw mask to: {upper_raw_path}")
+    
     upper_mask = (
         upper_mask
         & (~masks.get("shoes", np.zeros_like(upper_mask)))
         & (~masks.get("head", np.zeros_like(upper_mask)))
     )
+    
+    # 临时调试：保存排除 head 和 shoes 后的 mask
+    if np.any(upper_mask):
+        import tempfile
+        import os
+        debug_dir = tempfile.gettempdir()
+        upper_after_exclude_vis = (upper_mask.astype(np.uint8) * 255)
+        upper_after_exclude_path = os.path.join(debug_dir, "upper_mask_after_exclude.png")
+        cv2.imwrite(upper_after_exclude_path, upper_after_exclude_vis)
+        logger.info(f"[DEBUG] Saved upper mask after excluding head/shoes to: {upper_after_exclude_path}")
     
     if np.any(upper_mask) and np.any(lower_mask_current):
         overlap = upper_mask & lower_mask_current
@@ -649,9 +679,45 @@ def process_image(
                 masks["lower"] = lower_mask_current
     
     upper_mask = upper_mask & (~lower_mask_current)
+    
+    # 临时调试：保存处理重叠后的 mask（清理前）
+    if np.any(upper_mask):
+        import tempfile
+        import os
+        debug_dir = tempfile.gettempdir()
+        upper_before_clean_vis = (upper_mask.astype(np.uint8) * 255)
+        upper_before_clean_path = os.path.join(debug_dir, "upper_mask_before_clean.png")
+        cv2.imwrite(upper_before_clean_path, upper_before_clean_vis)
+        logger.info(f"[DEBUG] Saved upper mask before cleaning to: {upper_before_clean_path}")
+    
     upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
+    
+    # 临时调试：保存 upper 的最终结果
+    if np.any(upper_mask):
+        import tempfile
+        import os
+        debug_dir = tempfile.gettempdir()
+        upper_final_vis = (upper_mask.astype(np.uint8) * 255)
+        upper_final_path = os.path.join(debug_dir, "upper_mask_final.png")
+        cv2.imwrite(upper_final_path, upper_final_vis)
+        logger.info(f"[DEBUG] Saved upper final mask to: {upper_final_path}")
+        
+        # 保存最终抠图
+        upper_final_cropped = render_white_bg(image_bgr, upper_mask)
+        upper_final_cropped_path = os.path.join(debug_dir, "upper_cropped_final.png")
+        cv2.imwrite(upper_final_cropped_path, upper_final_cropped)
+        logger.info(f"[DEBUG] Saved upper final cropped image to: {upper_final_cropped_path}")
+        
+        # 保存叠加效果
+        upper_overlay = image_bgr.copy()
+        overlay = upper_overlay.copy()
+        overlay[upper_mask] = [0, 255, 0]  # 绿色叠加
+        upper_overlay = cv2.addWeighted(upper_overlay, 0.7, overlay, 0.3, 0)
+        upper_overlay_path = os.path.join(debug_dir, "upper_overlay_final.png")
+        cv2.imwrite(upper_overlay_path, upper_overlay)
+        logger.info(f"[DEBUG] Saved upper final overlay to: {upper_overlay_path}")
 
     logger.info("[STEP] Stage 2: detecting legs and hands (sequential)...")
     stage2_start = time.time()

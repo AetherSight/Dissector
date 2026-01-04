@@ -11,6 +11,8 @@ from typing import Dict, Optional, List, Tuple
 import base64
 import io
 import torch
+import os
+import tempfile
 
 from .sam3_backend import SAM3Base
 
@@ -43,10 +45,8 @@ BODY_PARTS_PROMPTS = {
         "bracer",
         "arm band",
         "arm accessory",
-        "neck accessory",
+        "scarf",
         "necklace",
-        "neck ring",
-        "choker",
         "collar",
         "belt",
         "waistband",
@@ -69,11 +69,8 @@ BODY_PARTS_PROMPTS = {
         "tights",
         "pant legs",
         "trouser legs",
-        "inner lining",
         "lining",
-        "inner fabric",
-        "garment lining",
-        "clothing lining",
+        "inner lining",
     ],
     "shoes": [
         "shoe",
@@ -91,9 +88,59 @@ BODY_PARTS_PROMPTS = {
         "hair accessory",
         "hair flower",
         "flower hair accessory",
-        "head",
-        "hair",
+        "headwear",
+        "headpiece",
+        "headdress",
         "hat",
+        "ear",
+        "ears",
+        "human ear",
+        "earlobe",
+        "ear lobe",
+        "ear accessory",
+        "earring",
+        "earrings",
+        "ear jewelry",
+        "cap",
+        "helmet",
+        "crown",
+        "tiara",
+        "headband",
+        "hood",
+        "hair ornament",
+        "hair clip",
+        "hairpin",
+        "hair band",
+        "hair ribbon",
+        "hair bow",
+        "wig",
+        "turban",
+        "beret",
+        "beanie",
+        "bonnet",
+        "visor",
+        "baseball cap",
+        "head wrap",
+        "bandana",
+        "veil",
+        "head",
+        "human head",
+        "face",
+        "facial area",
+        "facial features",
+        "facial region",
+        "facial part",
+        "forehead",
+        "cheek",
+        "cheeks",
+        "chin",
+        "jaw",
+        "facial skin",
+        "hair",
+        "hairstyle",
+        "ponytail hair",
+        "cat ear",
+        "animal ear",
     ],
     "hands": [
         "human hand",
@@ -299,42 +346,45 @@ def segment_body_parts_with_sam3(
             
             mask = None
             
-            if use_dino:
-                # Ultralytics: 使用 DINO 检测 + SAM3 分割
-                boxes = run_grounding_dino_for_prompts(
-                    image_pil=image_pil,
-                    prompts=prompts,
-                    processor=processor,
-                    dino_model=dino_model,
-                    device=device,
-                    box_threshold=box_threshold,
-                    text_threshold=text_threshold,
-                )
-                
-                if boxes.size > 0:
-                    # 使用 SAM3 从边界框生成 mask
-                    mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
-                else:
-                    logger.warning(f"No boxes detected for {part_name}")
-            else:
-                # MLX: 分别调用每个提示词，然后合并结果（避免超长提示词被截断）
-                mask_total = None
-                for prompt in prompts:
-                    try:
-                        single_mask = sam3_model.generate_mask_from_text_prompt(
-                            image_pil=image_pil,
-                            text_prompt=prompt,
-                        )
-                        if single_mask is not None and single_mask.size > 0:
-                            if mask_total is None:
-                                mask_total = single_mask.copy()
-                            else:
-                                mask_total |= single_mask
-                    except Exception as e:
-                        logger.warning(f"Error with prompt '{prompt}': {e}")
-                        continue
-                
-                mask = mask_total
+            # 统一使用文本提示词叠加方式（MLX 和 Ultralytics 都尝试）
+            # 分别调用每个提示词，然后合并结果（避免超长提示词被截断）
+            mask_total = None
+            for prompt in prompts:
+                try:
+                    single_mask = sam3_model.generate_mask_from_text_prompt(
+                        image_pil=image_pil,
+                        text_prompt=prompt,
+                    )
+                    if single_mask is not None and single_mask.size > 0:
+                        if mask_total is None:
+                            mask_total = single_mask.copy()
+                        else:
+                            mask_total |= single_mask
+                except Exception as e:
+                    logger.warning(f"Error with prompt '{prompt}': {e}")
+                    continue
+            
+            mask = mask_total
+            
+            # 如果文本提示词方式失败且是 Ultralytics，回退到 DINO + SAM3
+            if mask is None or mask.size == 0:
+                if use_dino:
+                    logger.info(f"Text prompt failed for {part_name}, falling back to DINO + SAM3")
+                    boxes = run_grounding_dino_for_prompts(
+                        image_pil=image_pil,
+                        prompts=prompts,
+                        processor=processor,
+                        dino_model=dino_model,
+                        device=device,
+                        box_threshold=box_threshold,
+                        text_threshold=text_threshold,
+                    )
+                    
+                    if boxes.size > 0:
+                        # 使用 SAM3 从边界框生成 mask
+                        mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
+                    else:
+                        logger.warning(f"No boxes detected for {part_name}")
             
             if mask is None or mask.size == 0:
                 logger.warning(f"No mask found for {part_name}")
@@ -347,8 +397,8 @@ def segment_body_parts_with_sam3(
                 mask_uint8 = (mask.astype(np.uint8) * 255) if mask.dtype == bool else mask.astype(np.uint8)
                 mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
             
-            # 清理 mask
-            mask = remove_small_components(mask, min_area_ratio=0.001)
+            # 清理 mask（暂时注释掉，测试是否影响头饰检测）
+            # mask = remove_small_components(mask, min_area_ratio=0.001)
             
             # 存储 mask 用于后处理
             masks_dict[part_name] = mask
@@ -361,19 +411,40 @@ def segment_body_parts_with_sam3(
     # 后处理：排除重叠区域
     # upper 排除 head 和 shoes
     if "upper" in masks_dict:
+        # 保存原始检测的 mask（后处理前）
+        upper_raw = masks_dict["upper"].copy()
+        debug_dir = tempfile.gettempdir()
+        if np.any(upper_raw):
+            upper_raw_vis = (upper_raw.astype(np.uint8) * 255)
+            upper_raw_path = os.path.join(debug_dir, "upper_mask_raw.png")
+            cv2.imwrite(upper_raw_path, upper_raw_vis)
+            logger.info(f"[DEBUG] Saved upper raw mask to: {upper_raw_path}")
+        
         upper_mask = masks_dict["upper"].copy()
         if "head" in masks_dict:
             upper_mask = upper_mask & (~masks_dict["head"])
         if "shoes" in masks_dict:
             upper_mask = upper_mask & (~masks_dict["shoes"])
-        masks_dict["upper"] = remove_small_components(upper_mask, min_area_ratio=0.001)
+        
+        # 保存排除 head 和 shoes 后的 mask
+        if np.any(upper_mask):
+            upper_after_exclude_vis = (upper_mask.astype(np.uint8) * 255)
+            upper_after_exclude_path = os.path.join(debug_dir, "upper_mask_after_exclude.png")
+            cv2.imwrite(upper_after_exclude_path, upper_after_exclude_vis)
+            logger.info(f"[DEBUG] Saved upper mask after excluding head/shoes to: {upper_after_exclude_path}")
+        
+        # 暂时注释掉，测试是否影响头饰检测
+        # masks_dict["upper"] = remove_small_components(upper_mask, min_area_ratio=0.001)
+        masks_dict["upper"] = upper_mask
     
     # lower 排除 shoes
     if "lower" in masks_dict:
         lower_mask = masks_dict["lower"].copy()
         if "shoes" in masks_dict:
             lower_mask = lower_mask & (~masks_dict["shoes"])
-        masks_dict["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+        # 暂时注释掉，测试是否影响头饰检测
+        # masks_dict["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+        masks_dict["lower"] = lower_mask
     
     # upper 和 lower 的重叠处理
     if "upper" in masks_dict and "lower" in masks_dict:
@@ -385,18 +456,58 @@ def segment_body_parts_with_sam3(
             overlap_area = np.sum(overlap)
             overlap_ratio = overlap_area / max(upper_area, 1)
             
+            # 保存重叠处理前的 mask
+            debug_dir = tempfile.gettempdir()
+            upper_before_overlap_vis = (upper_mask.astype(np.uint8) * 255)
+            upper_before_overlap_path = os.path.join(debug_dir, "upper_mask_before_overlap.png")
+            cv2.imwrite(upper_before_overlap_path, upper_before_overlap_vis)
+            logger.info(f"[DEBUG] Saved upper mask before overlap handling to: {upper_before_overlap_path}")
+            
             if overlap_ratio > 0.1:
                 # 重叠区域归 upper
                 upper_mask = upper_mask | overlap
                 lower_mask = lower_mask & (~overlap)
-                masks_dict["upper"] = remove_small_components(upper_mask, min_area_ratio=0.001)
-                masks_dict["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+                # 暂时注释掉，测试是否影响头饰检测
+                # masks_dict["upper"] = remove_small_components(upper_mask, min_area_ratio=0.001)
+                # masks_dict["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+                masks_dict["upper"] = upper_mask
+                masks_dict["lower"] = lower_mask
             else:
                 # 重叠区域归 lower
                 upper_mask = upper_mask & (~overlap)
                 lower_mask = lower_mask | overlap
-                masks_dict["upper"] = remove_small_components(upper_mask, min_area_ratio=0.001)
-                masks_dict["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+                # 暂时注释掉，测试是否影响头饰检测
+                # masks_dict["upper"] = remove_small_components(upper_mask, min_area_ratio=0.001)
+                # masks_dict["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+                masks_dict["upper"] = upper_mask
+                masks_dict["lower"] = lower_mask
+    
+    # 临时调试：保存 upper 的最终结果
+    if "upper" in masks_dict:
+        debug_dir = tempfile.gettempdir()
+        upper_final = masks_dict["upper"]
+        
+        if np.any(upper_final):
+            # 保存最终 mask
+            upper_final_vis = (upper_final.astype(np.uint8) * 255)
+            upper_final_path = os.path.join(debug_dir, "upper_mask_final.png")
+            cv2.imwrite(upper_final_path, upper_final_vis)
+            logger.info(f"[DEBUG] Saved upper final mask to: {upper_final_path}")
+            
+            # 保存最终抠图
+            upper_final_cropped = render_white_bg(image_bgr, upper_final)
+            upper_final_cropped_path = os.path.join(debug_dir, "upper_cropped_final.png")
+            cv2.imwrite(upper_final_cropped_path, upper_final_cropped)
+            logger.info(f"[DEBUG] Saved upper final cropped image to: {upper_final_cropped_path}")
+            
+            # 保存叠加效果
+            upper_overlay = image_bgr.copy()
+            overlay = upper_overlay.copy()
+            overlay[upper_final] = [0, 255, 0]  # 绿色叠加
+            upper_overlay = cv2.addWeighted(upper_overlay, 0.7, overlay, 0.3, 0)
+            upper_overlay_path = os.path.join(debug_dir, "upper_overlay_final.png")
+            cv2.imwrite(upper_overlay_path, upper_overlay)
+            logger.info(f"[DEBUG] Saved upper final overlay to: {upper_overlay_path}")
     
     # 生成最终结果
     for part_name in BODY_PARTS_PROMPTS.keys():
