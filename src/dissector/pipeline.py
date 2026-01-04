@@ -492,46 +492,6 @@ def process_image(
         batch_dino_time = time.time() - step_start
         logger.info(f"[PERF] Batch DINO: {batch_dino_time:.2f}s, total boxes={len(all_boxes)}, labels={len(all_labels) if all_labels else 0}")
         
-        # 临时调试：保存 DINO 检测结果的可视化
-        if len(all_boxes) > 0:
-            import tempfile
-            import os
-            debug_dir = tempfile.gettempdir()
-            
-            # 在原图上绘制边界框和标签
-            dino_vis = image_bgr.copy()
-            for i, box in enumerate(all_boxes):
-                x1, y1, x2, y2 = box.astype(int)
-                # 绘制边界框
-                cv2.rectangle(dino_vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                # 绘制标签
-                label = all_labels[i] if i < len(all_labels) and all_labels[i] else f"box_{i}"
-                # 计算文本大小
-                (text_width, text_height), baseline = cv2.getTextSize(
-                    label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-                )
-                # 绘制文本背景
-                cv2.rectangle(
-                    dino_vis,
-                    (x1, y1 - text_height - baseline - 5),
-                    (x1 + text_width, y1),
-                    (0, 255, 0),
-                    -1
-                )
-                # 绘制文本
-                cv2.putText(
-                    dino_vis,
-                    label,
-                    (x1, y1 - baseline - 2),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 0, 0),
-                    1
-                )
-            
-            dino_vis_path = os.path.join(debug_dir, "dino_detection_result.png")
-            cv2.imwrite(dino_vis_path, dino_vis)
-            logger.info(f"[DEBUG] Saved DINO detection visualization to: {dino_vis_path}")
     else:
         # MLX backend 不使用 DINO，直接使用文本提示词
         all_boxes = np.array([])
@@ -640,31 +600,11 @@ def process_image(
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_mask_current = masks.get("lower", np.zeros_like(upper_mask))
     
-    # 临时调试：保存 upper 的原始检测 mask（后处理前）
-    if np.any(upper_mask):
-        import tempfile
-        import os
-        debug_dir = tempfile.gettempdir()
-        upper_raw_vis = (upper_mask.astype(np.uint8) * 255)
-        upper_raw_path = os.path.join(debug_dir, "upper_mask_raw.png")
-        cv2.imwrite(upper_raw_path, upper_raw_vis)
-        logger.info(f"[DEBUG] Saved upper raw mask to: {upper_raw_path}")
-    
     upper_mask = (
         upper_mask
         & (~masks.get("shoes", np.zeros_like(upper_mask)))
         & (~masks.get("head", np.zeros_like(upper_mask)))
     )
-    
-    # 临时调试：保存排除 head 和 shoes 后的 mask
-    if np.any(upper_mask):
-        import tempfile
-        import os
-        debug_dir = tempfile.gettempdir()
-        upper_after_exclude_vis = (upper_mask.astype(np.uint8) * 255)
-        upper_after_exclude_path = os.path.join(debug_dir, "upper_mask_after_exclude.png")
-        cv2.imwrite(upper_after_exclude_path, upper_after_exclude_vis)
-        logger.info(f"[DEBUG] Saved upper mask after excluding head/shoes to: {upper_after_exclude_path}")
     
     if np.any(upper_mask) and np.any(lower_mask_current):
         overlap = upper_mask & lower_mask_current
@@ -679,45 +619,9 @@ def process_image(
                 masks["lower"] = lower_mask_current
     
     upper_mask = upper_mask & (~lower_mask_current)
-    
-    # 临时调试：保存处理重叠后的 mask（清理前）
-    if np.any(upper_mask):
-        import tempfile
-        import os
-        debug_dir = tempfile.gettempdir()
-        upper_before_clean_vis = (upper_mask.astype(np.uint8) * 255)
-        upper_before_clean_path = os.path.join(debug_dir, "upper_mask_before_clean.png")
-        cv2.imwrite(upper_before_clean_path, upper_before_clean_vis)
-        logger.info(f"[DEBUG] Saved upper mask before cleaning to: {upper_before_clean_path}")
-    
     upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
-    
-    # 临时调试：保存 upper 的最终结果
-    if np.any(upper_mask):
-        import tempfile
-        import os
-        debug_dir = tempfile.gettempdir()
-        upper_final_vis = (upper_mask.astype(np.uint8) * 255)
-        upper_final_path = os.path.join(debug_dir, "upper_mask_final.png")
-        cv2.imwrite(upper_final_path, upper_final_vis)
-        logger.info(f"[DEBUG] Saved upper final mask to: {upper_final_path}")
-        
-        # 保存最终抠图
-        upper_final_cropped = render_white_bg(image_bgr, upper_mask)
-        upper_final_cropped_path = os.path.join(debug_dir, "upper_cropped_final.png")
-        cv2.imwrite(upper_final_cropped_path, upper_final_cropped)
-        logger.info(f"[DEBUG] Saved upper final cropped image to: {upper_final_cropped_path}")
-        
-        # 保存叠加效果
-        upper_overlay = image_bgr.copy()
-        overlay = upper_overlay.copy()
-        overlay[upper_mask] = [0, 255, 0]  # 绿色叠加
-        upper_overlay = cv2.addWeighted(upper_overlay, 0.7, overlay, 0.3, 0)
-        upper_overlay_path = os.path.join(debug_dir, "upper_overlay_final.png")
-        cv2.imwrite(upper_overlay_path, upper_overlay)
-        logger.info(f"[DEBUG] Saved upper final overlay to: {upper_overlay_path}")
 
     logger.info("[STEP] Stage 2: detecting legs and hands (sequential)...")
     stage2_start = time.time()

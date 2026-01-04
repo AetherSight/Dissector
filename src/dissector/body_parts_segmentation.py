@@ -12,7 +12,6 @@ import base64
 import io
 import torch
 import os
-import tempfile
 
 from .sam3_backend import SAM3Base
 
@@ -411,28 +410,11 @@ def segment_body_parts_with_sam3(
     # 后处理：排除重叠区域
     # upper 排除 head 和 shoes
     if "upper" in masks_dict:
-        # 保存原始检测的 mask（后处理前）
-        upper_raw = masks_dict["upper"].copy()
-        debug_dir = tempfile.gettempdir()
-        if np.any(upper_raw):
-            upper_raw_vis = (upper_raw.astype(np.uint8) * 255)
-            upper_raw_path = os.path.join(debug_dir, "upper_mask_raw.png")
-            cv2.imwrite(upper_raw_path, upper_raw_vis)
-            logger.info(f"[DEBUG] Saved upper raw mask to: {upper_raw_path}")
-        
         upper_mask = masks_dict["upper"].copy()
         if "head" in masks_dict:
             upper_mask = upper_mask & (~masks_dict["head"])
         if "shoes" in masks_dict:
             upper_mask = upper_mask & (~masks_dict["shoes"])
-        
-        # 保存排除 head 和 shoes 后的 mask
-        if np.any(upper_mask):
-            upper_after_exclude_vis = (upper_mask.astype(np.uint8) * 255)
-            upper_after_exclude_path = os.path.join(debug_dir, "upper_mask_after_exclude.png")
-            cv2.imwrite(upper_after_exclude_path, upper_after_exclude_vis)
-            logger.info(f"[DEBUG] Saved upper mask after excluding head/shoes to: {upper_after_exclude_path}")
-        
         # 暂时注释掉，测试是否影响头饰检测
         # masks_dict["upper"] = remove_small_components(upper_mask, min_area_ratio=0.001)
         masks_dict["upper"] = upper_mask
@@ -456,13 +438,6 @@ def segment_body_parts_with_sam3(
             overlap_area = np.sum(overlap)
             overlap_ratio = overlap_area / max(upper_area, 1)
             
-            # 保存重叠处理前的 mask
-            debug_dir = tempfile.gettempdir()
-            upper_before_overlap_vis = (upper_mask.astype(np.uint8) * 255)
-            upper_before_overlap_path = os.path.join(debug_dir, "upper_mask_before_overlap.png")
-            cv2.imwrite(upper_before_overlap_path, upper_before_overlap_vis)
-            logger.info(f"[DEBUG] Saved upper mask before overlap handling to: {upper_before_overlap_path}")
-            
             if overlap_ratio > 0.1:
                 # 重叠区域归 upper
                 upper_mask = upper_mask | overlap
@@ -481,33 +456,6 @@ def segment_body_parts_with_sam3(
                 # masks_dict["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
                 masks_dict["upper"] = upper_mask
                 masks_dict["lower"] = lower_mask
-    
-    # 临时调试：保存 upper 的最终结果
-    if "upper" in masks_dict:
-        debug_dir = tempfile.gettempdir()
-        upper_final = masks_dict["upper"]
-        
-        if np.any(upper_final):
-            # 保存最终 mask
-            upper_final_vis = (upper_final.astype(np.uint8) * 255)
-            upper_final_path = os.path.join(debug_dir, "upper_mask_final.png")
-            cv2.imwrite(upper_final_path, upper_final_vis)
-            logger.info(f"[DEBUG] Saved upper final mask to: {upper_final_path}")
-            
-            # 保存最终抠图
-            upper_final_cropped = render_white_bg(image_bgr, upper_final)
-            upper_final_cropped_path = os.path.join(debug_dir, "upper_cropped_final.png")
-            cv2.imwrite(upper_final_cropped_path, upper_final_cropped)
-            logger.info(f"[DEBUG] Saved upper final cropped image to: {upper_final_cropped_path}")
-            
-            # 保存叠加效果
-            upper_overlay = image_bgr.copy()
-            overlay = upper_overlay.copy()
-            overlay[upper_final] = [0, 255, 0]  # 绿色叠加
-            upper_overlay = cv2.addWeighted(upper_overlay, 0.7, overlay, 0.3, 0)
-            upper_overlay_path = os.path.join(debug_dir, "upper_overlay_final.png")
-            cv2.imwrite(upper_overlay_path, upper_overlay)
-            logger.info(f"[DEBUG] Saved upper final overlay to: {upper_overlay_path}")
     
     # 生成最终结果
     for part_name in BODY_PARTS_PROMPTS.keys():
