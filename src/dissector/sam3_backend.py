@@ -261,7 +261,21 @@ class MLXSAM3(SAM3Base):
             masks_raw = state_after_box.get("masks", [])
             
             # MLX 可能返回 MLX array 或其他类型，需要转换为 numpy
-            if masks_raw is not None and len(masks_raw) > 0:
+            # 安全地检查 masks_raw 是否有效（避免对 MLX array 使用 len()）
+            masks_raw_valid = False
+            if masks_raw is not None:
+                try:
+                    if hasattr(masks_raw, '__len__'):
+                        masks_raw_valid = len(masks_raw) > 0
+                    elif hasattr(masks_raw, 'shape'):
+                        # MLX array 有 shape 属性
+                        masks_raw_valid = masks_raw.shape[0] > 0 if len(masks_raw.shape) > 0 else False
+                    else:
+                        masks_raw_valid = True  # 假设有值
+                except Exception:
+                    masks_raw_valid = masks_raw is not None
+            
+            if masks_raw_valid:
                 # 尝试转换为 numpy array
                 try:
                     # 如果是 MLX array，转换为 numpy
@@ -284,8 +298,31 @@ class MLXSAM3(SAM3Base):
             else:
                 logger.debug(f"[MLX] No masks in state after {api_method}")
         
+        # 检查 masks 是否有效（安全的方式，避免对 MLX array 使用 len()）
+        masks_valid = False
+        if masks is not None:
+            try:
+                # 尝试获取长度（如果是可迭代的）
+                if hasattr(masks, '__len__'):
+                    try:
+                        masks_valid = len(masks) > 0
+                    except (ValueError, TypeError):
+                        # MLX array 可能不支持 len()，尝试使用 shape
+                        if hasattr(masks, 'shape'):
+                            masks_valid = masks.shape[0] > 0 if len(masks.shape) > 0 else False
+                        else:
+                            masks_valid = True
+                elif hasattr(masks, 'shape'):
+                    # MLX array 有 shape 属性
+                    masks_valid = masks.shape[0] > 0 if len(masks.shape) > 0 else False
+                else:
+                    masks_valid = True  # 假设有值
+            except Exception:
+                # 如果无法检查，假设有值
+                masks_valid = masks is not None
+        
         # 如果还没有 masks，尝试调用 model 来生成
-        if not masks or len(masks) == 0:
+        if not masks_valid:
             logger.debug("[MLX] No masks in state, attempting to generate with model...")
             
             # 方法1: 尝试调用 model 的 o2m_mask_predict 方法
@@ -296,7 +333,12 @@ class MLXSAM3(SAM3Base):
                     result = self.model.o2m_mask_predict(state_after_box)
                     if isinstance(result, dict):
                         masks = result.get("masks", [])
-                        logger.debug(f"[MLX] o2m_mask_predict() returned masks, count: {len(masks) if masks else 0}")
+                        # 安全地获取 count
+                        try:
+                            count = len(masks) if hasattr(masks, '__len__') else 1
+                        except (ValueError, TypeError):
+                            count = 1
+                        logger.debug(f"[MLX] o2m_mask_predict() returned masks, count: {count}")
                     elif result is not None:
                         # 如果返回的不是 dict，尝试提取 masks
                         if hasattr(result, 'masks'):
@@ -306,18 +348,41 @@ class MLXSAM3(SAM3Base):
                     logger.debug(f"[MLX] model.o2m_mask_predict() failed: {e}")
             
             # 方法2: 尝试调用 model 的 inst_interactive_predictor 方法
-            if (not masks or len(masks) == 0) and hasattr(self.model, 'inst_interactive_predictor'):
+            # 更新 masks_valid 状态（如果 masks 被更新了）
+            if masks is not None and not masks_valid:
+                try:
+                    if hasattr(masks, '__len__'):
+                        try:
+                            masks_valid = len(masks) > 0
+                        except (ValueError, TypeError):
+                            if hasattr(masks, 'shape'):
+                                masks_valid = masks.shape[0] > 0 if len(masks.shape) > 0 else False
+                            else:
+                                masks_valid = True
+                    elif hasattr(masks, 'shape'):
+                        masks_valid = masks.shape[0] > 0 if len(masks.shape) > 0 else False
+                    else:
+                        masks_valid = True
+                except Exception:
+                    masks_valid = masks is not None
+            
+            if not masks_valid and hasattr(self.model, 'inst_interactive_predictor'):
                 try:
                     logger.debug("[MLX] Trying model.inst_interactive_predictor()")
                     result = self.model.inst_interactive_predictor(state_after_box)
                     if isinstance(result, dict):
                         masks = result.get("masks", [])
-                        logger.debug(f"[MLX] inst_interactive_predictor() returned masks, count: {len(masks) if masks else 0}")
+                        # 安全地获取 count
+                        try:
+                            count = len(masks) if hasattr(masks, '__len__') else 1
+                        except (ValueError, TypeError):
+                            count = 1
+                        logger.debug(f"[MLX] inst_interactive_predictor() returned masks, count: {count}")
                 except Exception as e:
                     logger.debug(f"[MLX] model.inst_interactive_predictor() failed: {e}")
             
             # 方法3: 尝试直接调用 model（无参数，使用内部 state）
-            if (not masks or len(masks) == 0):
+            if not masks_valid:
                 try:
                     logger.debug("[MLX] Trying model() with no args (using internal state)")
                     # 某些 MLX 模型可能需要通过 processor 来调用
@@ -327,12 +392,17 @@ class MLXSAM3(SAM3Base):
                         result = self.model()
                         if isinstance(result, dict):
                             masks = result.get("masks", [])
-                            logger.debug(f"[MLX] model() returned masks, count: {len(masks) if masks else 0}")
+                            # 安全地获取 count
+                            try:
+                                count = len(masks) if hasattr(masks, '__len__') else 1
+                            except (ValueError, TypeError):
+                                count = 1
+                            logger.debug(f"[MLX] model() returned masks, count: {count}")
                 except Exception as e:
                     logger.debug(f"[MLX] model() failed: {e}")
             
             # 方法4: 尝试通过 processor 调用 model
-            if (not masks or len(masks) == 0) and hasattr(self.processor, 'model'):
+            if not masks_valid and hasattr(self.processor, 'model'):
                 try:
                     logger.debug("[MLX] Trying processor.model() with state")
                     # processor.model 可能可以直接处理 state
@@ -368,7 +438,14 @@ class MLXSAM3(SAM3Base):
         if masks is not None:
             try:
                 if hasattr(masks, '__len__'):
-                    has_masks = len(masks) > 0
+                    try:
+                        has_masks = len(masks) > 0
+                    except (ValueError, TypeError):
+                        # MLX array 可能不支持 len()，尝试使用 shape
+                        if hasattr(masks, 'shape'):
+                            has_masks = masks.shape[0] > 0 if len(masks.shape) > 0 else False
+                        else:
+                            has_masks = True
                 else:
                     has_masks = masks is not None
             except Exception:
