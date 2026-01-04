@@ -20,6 +20,8 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Dissector", version="0.1.0")
 
+processor = None
+dino_model = None
 sam3_model = None
 device = None
 
@@ -44,13 +46,14 @@ logger.info(f"Thread pool initialized with {_max_workers} workers")
 @app.on_event("startup")
 async def load_models_on_startup():
     """Load models when the service starts."""
-    global sam3_model, device
+    global processor, dino_model, sam3_model, device
     
     device = get_device()
     logger.info(f"Loading models on device: {device}")
     
     try:
-        sam3_model = load_models(
+        processor, dino_model, sam3_model = load_models(
+            dino_model_name="IDEA-Research/grounding-dino-base",
             device=device
         )
         logger.info(f"Models loaded successfully (SAM3 backend: {sam3_model.backend_name})")
@@ -74,20 +77,22 @@ async def health_check():
         "status": "healthy",
         "device": str(device) if device else "unknown",
         "sam3_backend": sam3_model.backend_name if sam3_model else "unknown",
-        "models_loaded": sam3_model is not None
+        "models_loaded": all([processor, dino_model, sam3_model])
     }
 
 
 @app.post("/segment")
 async def segment_image(
     file: UploadFile = File(...),
+    box_threshold: float = 0.3,
+    text_threshold: float = 0.25,
 ):
     """
     Segment gear from uploaded image.
     
     Returns base64-encoded images for: upper, lower, shoes, head, hands
     """
-    if not sam3_model:
+    if not all([processor, dino_model, sam3_model]):
         raise HTTPException(status_code=503, detail="Models not loaded")
     
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -114,7 +119,12 @@ async def segment_image(
                 executor,
                 process_image,
                 tmp_path,
+                processor,
+                dino_model,
                 sam3_model,
+                device,
+                box_threshold,
+                text_threshold,
             )
             
             return JSONResponse(content=results)
@@ -137,7 +147,7 @@ async def remove_background_endpoint(
     
     Returns base64-encoded PNG image with transparent background.
     """
-    if not sam3_model:
+    if not all([processor, dino_model, sam3_model]):
         raise HTTPException(status_code=503, detail="Models not loaded")
     
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -161,7 +171,10 @@ async def remove_background_endpoint(
                 executor,
                 remove_background,
                 tmp_path,
+                processor,
+                dino_model,
                 sam3_model,
+                device,
             )
             
             return JSONResponse(content={"image": result})

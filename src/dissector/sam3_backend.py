@@ -256,7 +256,8 @@ class UltralyticsSAM3(SAM3Base):
         """
         从文本提示生成 mask（Ultralytics 实现）
         
-        注意：Ultralytics SAM3 可能不支持文本提示，这里返回 None
+        注意：Ultralytics SAM3 可能不支持文本提示，这里使用一个fallback方法
+        如果需要真正的文本提示支持，可能需要使用 DINO + SAM3 的组合
         
         Args:
             image_pil: PIL Image 对象
@@ -266,8 +267,8 @@ class UltralyticsSAM3(SAM3Base):
             Binary mask as numpy array of shape (H, W), dtype=bool, or None if failed
         """
         # Ultralytics SAM3 可能不支持直接的文本提示
-        # 这里返回 None，调用方需要处理这种情况
-        logger.warning("Ultralytics SAM3 does not support text prompts directly.")
+        # 这里返回 None，调用方可以使用其他方法（如 DINO + SAM3）
+        logger.warning("Ultralytics SAM3 does not support text prompts directly. Use DINO + SAM3 combination instead.")
         return None
     
     @property
