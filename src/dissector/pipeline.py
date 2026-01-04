@@ -566,43 +566,20 @@ def process_image(
     
     upper_mask = upper_mask & (~lower_mask_current)
     upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
-    upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
-    lower_mask_current = masks.get("lower", np.zeros_like(upper_mask))
-    
-    upper_mask = (
-        upper_mask
-        & (~masks.get("shoes", np.zeros_like(upper_mask)))
-        & (~masks.get("head", np.zeros_like(upper_mask)))
-    )
-    
-    if np.any(upper_mask) and np.any(lower_mask_current):
-        overlap = upper_mask & lower_mask_current
-        if np.any(overlap):
-            upper_area = np.sum(upper_mask)
-            overlap_area = np.sum(overlap)
-            overlap_ratio = overlap_area / max(upper_area, 1)
-            
-            if overlap_ratio > 0.1:
-                upper_mask = upper_mask | overlap
-                lower_mask_current = lower_mask_current & (~overlap)
-                masks["lower"] = lower_mask_current
-    
-    upper_mask = upper_mask & (~lower_mask_current)
-    upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
-    logger.info("[STEP] detecting legs in upper (move to lower)...")
-    step_start = time.time()
-    if use_batch:
-        leg_boxes = filter_boxes_by_prompts(all_boxes, all_labels, LEG_PROMPTS)
-        if len(leg_boxes) > 0:
-            masks["legs"] = mask_from_boxes(image_pil, leg_boxes, sam3_model)
-            logger.info(f"[PERF] legs: SAM3={time.time()-step_start:.2f}s, boxes={len(leg_boxes)}")
-        else:
-            detect_and_store("legs", LEG_PROMPTS)
-    else:
-        detect_and_store("legs", LEG_PROMPTS)
+    logger.info("[STEP] Stage 2: detecting legs and hands (parallel)...")
+    stage2_start = time.time()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {
+            executor.submit(process_sam3, "legs", LEG_PROMPTS): "legs",
+            executor.submit(process_sam3, "hands", HAND_PROMPTS): "hands",
+        }
+        for future in as_completed(futures):
+            key, mask = future.result()
+            masks[key] = mask
+    logger.info(f"[PERF] Stage 2 completed: {time.time()-stage2_start:.2f}s")
     
     leg_mask = masks.get("legs", np.zeros(image_rgb.shape[:2], dtype=bool))
     leg_mask = remove_small_components(leg_mask, min_area_ratio=0.0005)
@@ -615,6 +592,7 @@ def process_image(
             masks["lower"] = remove_small_components(masks["lower"], min_area_ratio=0.001)
             upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
             masks["upper"] = upper_mask
+    
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = remove_small_components(hand_mask, min_area_ratio=0.0005)
     
