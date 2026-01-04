@@ -317,11 +317,24 @@ def segment_body_parts_with_sam3(
                 else:
                     logger.warning(f"No boxes detected for {part_name}")
             else:
-                # MLX: 直接使用文本提示
-                mask = sam3_model.generate_mask_from_text_prompt(
-                    image_pil=image_pil,
-                    text_prompt=". ".join(prompts) + ".",
-                )
+                # MLX: 分别调用每个提示词，然后合并结果（避免超长提示词被截断）
+                mask_total = None
+                for prompt in prompts:
+                    try:
+                        single_mask = sam3_model.generate_mask_from_text_prompt(
+                            image_pil=image_pil,
+                            text_prompt=prompt,
+                        )
+                        if single_mask is not None and single_mask.size > 0:
+                            if mask_total is None:
+                                mask_total = single_mask.copy()
+                            else:
+                                mask_total |= single_mask
+                    except Exception as e:
+                        logger.warning(f"Error with prompt '{prompt}': {e}")
+                        continue
+                
+                mask = mask_total
             
             if mask is None or mask.size == 0:
                 logger.warning(f"No mask found for {part_name}")
