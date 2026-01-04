@@ -208,91 +208,42 @@ class MLXSAM3(SAM3Base):
         state = self.processor.set_image(image_pil)
         logger.debug(f"[MLX] Image set, state type: {type(state)}, is_dict: {isinstance(state, dict)}")
         
-        # 转换 bbox 为 MLX 格式（归一化到 [0, 1]）
+        # 转换 bbox 为 MLX 格式
+        # MLX SAM3 需要 [center_x, center_y, width, height] 格式，归一化到 [0, 1]
         x1, y1, x2, y2 = bbox[0]
-        box_normalized = np.array([[x1 / w, y1 / h, x2 / w, y2 / h]], dtype=np.float32)
-        logger.debug(f"[MLX] Bbox normalized: {box_normalized}")
+        x1_norm, y1_norm = x1 / w, y1 / h
+        x2_norm, y2_norm = x2 / w, y2 / h
         
-        # 检查 add_geometric_prompt 方法的签名
-        if hasattr(self.processor, 'add_geometric_prompt'):
-            import inspect
-            try:
-                sig = inspect.signature(self.processor.add_geometric_prompt)
-                logger.info(f"[MLX] add_geometric_prompt signature: {sig}")
-                logger.info(f"[MLX] add_geometric_prompt docstring: {self.processor.add_geometric_prompt.__doc__}")
-            except Exception as e:
-                logger.debug(f"[MLX] Could not inspect add_geometric_prompt: {e}")
+        # 转换为 [center_x, center_y, width, height]
+        center_x = (x1_norm + x2_norm) / 2.0
+        center_y = (y1_norm + y2_norm) / 2.0
+        box_width = x2_norm - x1_norm
+        box_height = y2_norm - y1_norm
         
-        # 尝试不同的 API 方法设置 box prompt
-        state_after_box = None
-        api_method = None
+        # add_geometric_prompt 需要 List 格式，不是 numpy array
+        box_list = [center_x, center_y, box_width, box_height]
+        logger.debug(f"[MLX] Bbox converted to [cx, cy, w, h]: {box_list}")
         
-        # 方法1: 尝试 add_geometric_prompt (这是 MLX SAM3 的正确方法)
-        if hasattr(self.processor, 'add_geometric_prompt'):
-            try:
-                logger.debug("[MLX] Trying add_geometric_prompt with box")
-                # add_geometric_prompt 可能需要特定的格式，尝试不同的调用方式
-                # 格式可能是: add_geometric_prompt(prompt_type, prompt_data, state)
-                # 或者: add_geometric_prompt(boxes, state)
-                try:
-                    # 尝试1: 直接传入 box 和 state
-                    state_after_box = self.processor.add_geometric_prompt(box_normalized, state)
-                    api_method = "add_geometric_prompt_direct"
-                    logger.debug(f"[MLX] add_geometric_prompt (direct) succeeded")
-                except Exception as e1:
-                    logger.debug(f"[MLX] add_geometric_prompt (direct) failed: {e1}, trying with 'box' type")
-                    try:
-                        # 尝试2: 传入类型和 box
-                        state_after_box = self.processor.add_geometric_prompt("box", box_normalized, state)
-                        api_method = "add_geometric_prompt_typed"
-                        logger.debug(f"[MLX] add_geometric_prompt (typed) succeeded")
-                    except Exception as e2:
-                        logger.debug(f"[MLX] add_geometric_prompt (typed) failed: {e2}, trying with dict")
-                        try:
-                            # 尝试3: 传入字典格式
-                            prompt_dict = {"boxes": box_normalized}
-                            state_after_box = self.processor.add_geometric_prompt(prompt_dict, state)
-                            api_method = "add_geometric_prompt_dict"
-                            logger.debug(f"[MLX] add_geometric_prompt (dict) succeeded")
-                        except Exception as e3:
-                            logger.warning(f"[MLX] All add_geometric_prompt attempts failed: {e1}, {e2}, {e3}")
-            except Exception as e:
-                logger.warning(f"[MLX] add_geometric_prompt failed: {e}")
+        # 使用 add_geometric_prompt
+        # 签名: add_geometric_prompt(box: List, label: bool, state: Dict)
+        # label=True 表示正样本（要分割的区域）
+        try:
+            logger.debug("[MLX] Calling add_geometric_prompt(box, label=True, state)")
+            state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
+            api_method = "add_geometric_prompt"
+            logger.debug(f"[MLX] add_geometric_prompt succeeded, state type: {type(state_after_box)}")
+        except Exception as e:
+            logger.error(f"[MLX] add_geometric_prompt failed: {e}", exc_info=True)
+            # Fallback: 直接设置 boxes（但这样不会自动生成 masks）
+            logger.warning("[MLX] Falling back to direct box assignment (masks may not be generated)")
+            if isinstance(state, dict):
+                state_after_box = state.copy()
+                state_after_box['boxes'] = np.array([[x1_norm, y1_norm, x2_norm, y2_norm]], dtype=np.float32)
+                api_method = "direct_dict"
+            else:
+                state_after_box = state
+                api_method = "direct_state"
         
-        # 方法2: 尝试 set_box_prompt (fallback)
-        if state_after_box is None and hasattr(self.processor, 'set_box_prompt'):
-            try:
-                logger.debug("[MLX] Trying set_box_prompt")
-                state_after_box = self.processor.set_box_prompt(box_normalized, state)
-                api_method = "set_box_prompt"
-                logger.debug(f"[MLX] set_box_prompt succeeded")
-            except Exception as e:
-                logger.debug(f"[MLX] set_box_prompt failed: {e}")
-        
-        # 方法3: 尝试 set_bbox_prompt (fallback)
-        if state_after_box is None and hasattr(self.processor, 'set_bbox_prompt'):
-            try:
-                logger.debug("[MLX] Trying set_bbox_prompt")
-                state_after_box = self.processor.set_bbox_prompt(box_normalized, state)
-                api_method = "set_bbox_prompt"
-                logger.debug(f"[MLX] set_bbox_prompt succeeded")
-            except Exception as e:
-                logger.debug(f"[MLX] set_bbox_prompt failed: {e}")
-        
-        # 方法4: 尝试直接设置 boxes（最后 fallback）
-        if state_after_box is None:
-            try:
-                logger.debug("[MLX] Trying direct box assignment (fallback)")
-                if isinstance(state, dict):
-                    state_after_box = state.copy()
-                    state_after_box['boxes'] = box_normalized
-                    api_method = "direct_dict"
-                else:
-                    state_after_box = state
-                    api_method = "direct_state"
-                logger.debug(f"[MLX] Direct assignment succeeded")
-            except Exception as e:
-                logger.warning(f"[MLX] Direct assignment failed: {e}")
         
         if state_after_box is None:
             logger.error("[MLX] All methods failed to set box prompt")
@@ -301,15 +252,15 @@ class MLXSAM3(SAM3Base):
         logger.debug(f"[MLX] Using API method: {api_method}")
         logger.debug(f"[MLX] State after box keys: {list(state_after_box.keys()) if isinstance(state_after_box, dict) else 'N/A'}")
         
-        # 尝试生成 masks - 设置 box 后可能需要调用 processor 或 model 来生成
+        # add_geometric_prompt 会自动运行推理，所以应该已经生成了 masks
         masks = None
         
-        # 首先检查 state 中是否已经有 masks（add_geometric_prompt 可能已经生成了）
+        # 检查 state 中是否有 masks
         if isinstance(state_after_box, dict):
             masks = state_after_box.get("masks", [])
-            logger.debug(f"[MLX] Initial masks check from dict, count: {len(masks) if masks else 0}")
+            logger.debug(f"[MLX] Masks from state after {api_method}, count: {len(masks) if masks else 0}")
             if masks:
-                logger.debug(f"[MLX] Masks already present in state after {api_method}!")
+                logger.info(f"[MLX] Successfully generated {len(masks)} mask(s) using {api_method}!")
         
         # 如果还没有 masks，尝试调用 model 来生成
         if not masks or len(masks) == 0:
