@@ -25,13 +25,18 @@ dino_model = None
 sam3_model = None
 device = None
 
+import platform
+
 _max_workers = int(os.getenv('MAX_WORKERS', 0))
 if _max_workers <= 0:
-    cpu_count = multiprocessing.cpu_count()
-    if torch.cuda.is_available() or (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
-        _max_workers = min(cpu_count, 8)
+    if platform.system() == "Darwin":
+        _max_workers = 1
     else:
-        _max_workers = min(cpu_count // 2, 4)
+        cpu_count = multiprocessing.cpu_count()
+        if torch.cuda.is_available() or (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+            _max_workers = min(cpu_count, 8)
+        else:
+            _max_workers = min(cpu_count // 2, 4)
 
 executor = ThreadPoolExecutor(max_workers=_max_workers)
 
