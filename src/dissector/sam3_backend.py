@@ -211,18 +211,19 @@ class MLXSAM3(SAM3Base):
         # 转换 bbox 为 MLX 格式
         # MLX SAM3 需要 [center_x, center_y, width, height] 格式，归一化到 [0, 1]
         x1, y1, x2, y2 = bbox[0]
-        x1_norm, y1_norm = x1 / w, y1 / h
-        x2_norm, y2_norm = x2 / w, y2 / h
+        x1_norm, y1_norm = float(x1 / w), float(y1 / h)
+        x2_norm, y2_norm = float(x2 / w), float(y2 / h)
         
         # 转换为 [center_x, center_y, width, height]
-        center_x = (x1_norm + x2_norm) / 2.0
-        center_y = (y1_norm + y2_norm) / 2.0
-        box_width = x2_norm - x1_norm
-        box_height = y2_norm - y1_norm
+        center_x = float((x1_norm + x2_norm) / 2.0)
+        center_y = float((y1_norm + y2_norm) / 2.0)
+        box_width = float(x2_norm - x1_norm)
+        box_height = float(y2_norm - y1_norm)
         
-        # add_geometric_prompt 需要 List 格式，不是 numpy array
+        # add_geometric_prompt 需要纯 Python 的 float 类型列表
+        # 确保所有值都是 Python 原生 float，不是 numpy float32/float64
         box_list = [center_x, center_y, box_width, box_height]
-        logger.debug(f"[MLX] Bbox converted to [cx, cy, w, h]: {box_list}")
+        logger.debug(f"[MLX] Bbox converted to [cx, cy, w, h]: {box_list} (types: {[type(x).__name__ for x in box_list]})")
         
         # 使用 add_geometric_prompt
         # 签名: add_geometric_prompt(box: List, label: bool, state: Dict)
