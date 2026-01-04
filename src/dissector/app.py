@@ -34,7 +34,6 @@ if _max_workers <= 0:
         _max_workers = min(cpu_count // 2, 4)
 
 executor = ThreadPoolExecutor(max_workers=_max_workers)
-mlx_lock = None
 
 logger.info(f"Thread pool initialized with {_max_workers} workers")
 
@@ -42,7 +41,7 @@ logger.info(f"Thread pool initialized with {_max_workers} workers")
 @app.on_event("startup")
 async def load_models_on_startup():
     """Load models when the service starts."""
-    global processor, dino_model, sam3_model, device, mlx_lock
+    global processor, dino_model, sam3_model, device
     
     device = get_device()
     logger.info(f"Loading models on device: {device}")
@@ -53,10 +52,6 @@ async def load_models_on_startup():
             device=device
         )
         logger.info(f"Models loaded successfully (SAM3 backend: {sam3_model.backend_name})")
-        
-        if sam3_model and sam3_model.backend_name == "mlx":
-            mlx_lock = asyncio.Lock()
-            logger.info("MLX backend detected, using lock for thread safety")
     except Exception as e:
         logger.error(f"Failed to load models: {e}")
         raise
@@ -115,32 +110,17 @@ async def segment_image(
         
         try:
             loop = asyncio.get_event_loop()
-            
-            if mlx_lock:
-                async with mlx_lock:
-                    results = await loop.run_in_executor(
-                        executor,
-                        process_image,
-                        tmp_path,
-                        processor,
-                        dino_model,
-                        sam3_model,
-                        device,
-                        box_threshold,
-                        text_threshold,
-                    )
-            else:
-                results = await loop.run_in_executor(
-                    executor,
-                    process_image,
-                    tmp_path,
-                    processor,
-                    dino_model,
-                    sam3_model,
-                    device,
-                    box_threshold,
-                    text_threshold,
-                )
+            results = await loop.run_in_executor(
+                executor,
+                process_image,
+                tmp_path,
+                processor,
+                dino_model,
+                sam3_model,
+                device,
+                box_threshold,
+                text_threshold,
+            )
             
             return JSONResponse(content=results)
         finally:
@@ -182,28 +162,15 @@ async def remove_background_endpoint(
         
         try:
             loop = asyncio.get_event_loop()
-            
-            if mlx_lock:
-                async with mlx_lock:
-                    result = await loop.run_in_executor(
-                        executor,
-                        remove_background,
-                        tmp_path,
-                        processor,
-                        dino_model,
-                        sam3_model,
-                        device,
-                    )
-            else:
-                result = await loop.run_in_executor(
-                    executor,
-                    remove_background,
-                    tmp_path,
-                    processor,
-                    dino_model,
-                    sam3_model,
-                    device,
-                )
+            result = await loop.run_in_executor(
+                executor,
+                remove_background,
+                tmp_path,
+                processor,
+                dino_model,
+                sam3_model,
+                device,
+            )
             
             return JSONResponse(content={"image": result})
         finally:
