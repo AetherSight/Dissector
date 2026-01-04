@@ -376,7 +376,7 @@ class MLXSAM3(SAM3Base):
             if scores is not None and len(scores) == mask_array.shape[0]:
                 best_idx = np.argmax(scores)
                 mask = mask_array[best_idx]
-                logger.debug(f"[MLX] Selected mask {best_idx} with score {scores[best_idx]:.4f}")
+                logger.debug(f"[MLX] Selected mask {best_idx} with score {scores[best_idx]:.4f} out of {mask_array.shape[0]} masks")
             else:
                 mask = np.any(mask_array, axis=0).astype(bool)
                 logger.debug(f"[MLX] Merged all {mask_array.shape[0]} masks (no scores available)")
