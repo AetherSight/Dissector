@@ -238,16 +238,13 @@ class UltralyticsSAM3(SAM3Base):
 class MLXSAM3(SAM3Base):
     _gpu_lock = threading.Lock()
 
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_path: str | None = None, **kwargs):
         from sam3 import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
 
         self.model = build_sam3_image_model()
         self.processor = Sam3Processor(self.model)
 
-    # --------------------------------------------------
-    # box → point prompt（工程等价）
-    # --------------------------------------------------
     @staticmethod
     def _box_to_points(x1, y1, x2, y2, w, h):
         eps = 2
@@ -264,37 +261,33 @@ class MLXSAM3(SAM3Base):
         labels = [1, 1, 1, 1, 0, 0]
         return points, labels
 
-    # --------------------------------------------------
-    # 单 bbox
-    # --------------------------------------------------
     def generate_mask_from_bbox(self, image_pil, bbox):
         h, w = image_pil.size[1], image_pil.size[0]
         x1, y1, x2, y2 = bbox[0]
 
-        with self._gpu_lock:
-            state = self.processor.set_image(image_pil)
-
         points, labels = self._box_to_points(x1, y1, x2, y2, w, h)
 
         with self._gpu_lock:
-            state = self.processor.add_point_prompt(
+            result = self.processor(
+                image=image_pil,
                 points=points,
                 labels=labels,
-                state=state,
+                multimask_output=True,
             )
 
-        if not isinstance(state, dict):
+        if not isinstance(result, dict):
             return None
 
-        masks = state.get("masks", None)
+        masks = result.get("masks", None)
         if masks is None:
             return None
 
         masks = np.asarray(masks)
+
         if masks.ndim == 2:
             mask = masks
         elif masks.ndim == 3 and masks.shape[0] > 0:
-            # 唯一可靠策略：最大面积
+            # 唯一稳定策略：最大面积
             areas = masks.reshape(masks.shape[0], -1).sum(axis=1)
             mask = masks[np.argmax(areas)]
         else:
@@ -308,25 +301,6 @@ class MLXSAM3(SAM3Base):
             )
 
         return mask.astype(bool)
-
-    # --------------------------------------------------
-    # 多 bbox
-    # --------------------------------------------------
-    def generate_mask_from_bboxes(self, image_pil, bboxes):
-        h, w = image_pil.size[1], image_pil.size[0]
-        if bboxes.size == 0:
-            return np.zeros((h, w), dtype=bool)
-
-        out = np.zeros((h, w), dtype=bool)
-        for b in bboxes:
-            m = self.generate_mask_from_bbox(image_pil, b.reshape(1, 4))
-            if m is not None:
-                out |= m
-        return out
-
-    @property
-    def backend_name(self):
-        return "mlx"
 
 
 class SAM3Factory:
