@@ -53,6 +53,24 @@ class SAM3Base(ABC):
         """
         return None
     
+    def generate_mask_from_text_prompt(
+        self,
+        image_pil: Image.Image,
+        text_prompt: str,
+    ) -> Optional[np.ndarray]:
+        """
+        从文本提示生成二进制 mask（可选实现）
+        
+        Args:
+            image_pil: PIL Image 对象
+            text_prompt: 文本提示字符串
+        
+        Returns:
+            Binary mask as numpy array of shape (H, W), dtype=bool, or None if failed
+        """
+        # 默认实现：返回 None，子类需要实现
+        return None
+    
     @property
     @abstractmethod
     def backend_name(self) -> str:
@@ -230,260 +248,291 @@ class UltralyticsSAM3(SAM3Base):
         
         return None
     
+    def generate_mask_from_text_prompt(
+        self,
+        image_pil: Image.Image,
+        text_prompt: str,
+    ) -> Optional[np.ndarray]:
+        """
+        从文本提示生成 mask（Ultralytics 实现）
+        
+        注意：Ultralytics SAM3 可能不支持文本提示，这里使用一个fallback方法
+        如果需要真正的文本提示支持，可能需要使用 DINO + SAM3 的组合
+        
+        Args:
+            image_pil: PIL Image 对象
+            text_prompt: 文本提示字符串
+        
+        Returns:
+            Binary mask as numpy array of shape (H, W), dtype=bool, or None if failed
+        """
+        # Ultralytics SAM3 可能不支持直接的文本提示
+        # 这里返回 None，调用方可以使用其他方法（如 DINO + SAM3）
+        logger.warning("Ultralytics SAM3 does not support text prompts directly. Use DINO + SAM3 combination instead.")
+        return None
+    
     @property
     def backend_name(self) -> str:
         return "ultralytics"
 
 
 class MLXSAM3(SAM3Base):
-    """MLX SAM3 实现，与 UltralyticsSAM3 行为完全一致"""
-
-    def __init__(self, model_path: Optional[str] = None, device: Optional[str] = None):
+    """MLX SAM3 实现，支持 Apple Silicon"""
+    
+    def __init__(self, model_path: Optional[str] = None):
         """
         初始化 MLX SAM3
-
-        Args:
-            model_path: 模型路径（可选）
-            device: 设备类型（兼容接口，无实际作用）
-        """
-        from sam3 import build_sam3_image_model
-
-        logger.info("Loading MLX SAM3 model...")
-        self.model = build_sam3_image_model()
         
-        # 尝试导入 processor
+        Args:
+            model_path: 模型路径（MLX 版本通常不需要，使用默认模型）
+        """
         try:
+            # 导入 MLX SAM3
+            from sam3 import build_sam3_image_model
             from sam3.model.sam3_image_processor import Sam3Processor
-            self.processor = Sam3Processor(self.model)
-            self._use_processor = True
-        except Exception as e:
-            logger.warning(f"Could not load Sam3Processor: {e}, will use direct model API")
-            self.processor = None
-            self._use_processor = False
-
+            
+            logger.info("Loading MLX SAM3 model...")
+            self.model = build_sam3_image_model()
+            self.processor = Sam3Processor(self.model, confidence_threshold=0.5)
+            self._lock = threading.Lock()
+            self._current_state = None
+            self._current_image_id = None
+            
+        except ImportError as e:
+            logger.error(f"Failed to import MLX SAM3: {e}")
+            raise RuntimeError("MLX SAM3 is required on macOS. Install with: pip install mlx-sam3") from e
+    
     def generate_mask_from_bbox(
         self,
         image_pil: Image.Image,
         bbox: np.ndarray,
     ) -> Optional[np.ndarray]:
-        """从边界框生成 mask，直接使用模型API"""
+        """
+        从边界框生成 mask（MLX 实现）
+        
+        Args:
+            image_pil: PIL Image 对象
+            bbox: numpy array of shape (1, 4) with [x1, y1, x2, y2] 像素坐标
+        
+        Returns:
+            Binary mask as numpy array of shape (H, W), dtype=bool, or None if failed
+        """
         h, w = image_pil.size[1], image_pil.size[0]
-
-        # 直接使用模型API，避免processor调用问题
-        result = self._direct_inference(image_pil, bbox)
-
-        if not isinstance(result, dict) or "masks" not in result:
-            return None
-
-        masks = np.asarray(result["masks"])
-        if masks.ndim == 2:
-            mask = masks
-        elif masks.ndim == 3 and masks.shape[0] > 0:
-            # 选择最佳 mask（与 Ultralytics 一致：优先使用 scores，否则第一个）
-            scores = result.get("scores", None)
-            if scores is not None and len(scores) == masks.shape[0]:
-                scores = np.asarray(scores)
-                best_idx = np.argmax(scores)
-                mask = masks[best_idx]
-            else:
-                mask = masks[0]
-        else:
-            return None
-
-        # 确保是布尔类型
-        mask = mask.astype(bool)
-
-        # 调整到原始尺寸
-        if mask.shape != (h, w):
-            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-
-        return mask
-
+        
+        with self._lock:
+            try:
+                # 检查是否需要设置新图片
+                image_id = id(image_pil)
+                if self._current_image_id != image_id:
+                    self._current_state = self.processor.set_image(image_pil)
+                    self._current_image_id = image_id
+                
+                # 转换 bbox 为 MLX SAM3 格式: [center_x, center_y, width, height] 归一化到 [0, 1]
+                x1, y1, x2, y2 = bbox[0]
+                cx = (x1 + x2) / 2.0 / w
+                cy = (y1 + y2) / 2.0 / h
+                box_w = (x2 - x1) / w
+                box_h = (y2 - y1) / h
+                box_normalized = [cx, cy, box_w, box_h]
+                
+                # 添加几何提示并运行推理
+                state = self.processor.add_geometric_prompt(box_normalized, True, self._current_state)
+                self._current_state = state
+                
+                # 从 state 中提取 mask
+                if "masks" in state:
+                    masks = state["masks"]
+                    if masks is not None and len(masks) > 0:
+                        # MLX array 转换为 numpy
+                        import mlx.core as mx
+                        if isinstance(masks, mx.array):
+                            mask_np = np.array(masks[0])
+                        else:
+                            mask_np = np.array(masks[0]) if isinstance(masks, (list, tuple)) else np.array(masks)
+                        
+                        # 确保是 2D 布尔数组
+                        if mask_np.ndim == 3:
+                            mask_np = mask_np[0]
+                        elif mask_np.ndim > 2:
+                            mask_np = mask_np.squeeze()
+                        
+                        # 转换为布尔类型
+                        if mask_np.dtype != bool:
+                            mask_np = mask_np > 0.5
+                        
+                        # 确保尺寸匹配
+                        if mask_np.shape != (h, w):
+                            mask_uint8 = (mask_np.astype(np.uint8) * 255) if mask_np.dtype == bool else mask_np.astype(np.uint8)
+                            mask_np = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                        
+                        return mask_np.astype(bool)
+                
+                return None
+                
+            except Exception as e:
+                logger.error(f"Error generating mask from bbox with MLX SAM3: {e}", exc_info=True)
+                return None
+    
     def generate_mask_from_bboxes(
         self,
         image_pil: Image.Image,
         bboxes: np.ndarray,
     ) -> Optional[np.ndarray]:
-        """批量从边界框生成 mask，直接使用模型API"""
+        """
+        批量从边界框生成 mask（MLX 实现）
+        
+        Args:
+            image_pil: PIL Image 对象
+            bboxes: numpy array of shape (N, 4) with [x1, y1, x2, y2] 像素坐标
+        
+        Returns:
+            Binary mask as numpy array of shape (H, W), dtype=bool, or None if failed
+        """
         if bboxes.size == 0:
             h, w = image_pil.size[1], image_pil.size[0]
             return np.zeros((h, w), dtype=bool)
-
-        h, w = image_pil.size[1], image_pil.size[0]
-
-        # 直接使用批量API
-        result = self._direct_batch_inference(image_pil, bboxes)
-
-        if not isinstance(result, dict) or "masks" not in result:
-            return None
-
-        masks = np.asarray(result["masks"])
-
-        # 与 Ultralytics 完全一致：使用 np.any 合并所有 mask
-        if masks.ndim == 2:
-            mask = masks.astype(bool)
-        else:
-            # 合并所有 mask
-            mask = np.any(masks, axis=0).astype(bool)
-
-        if mask.ndim != 2:
-            return None
-
-        # 调整到原始尺寸
-        if mask.shape != (h, w):
-            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-
-        return mask
-
-
-    def _direct_inference(self, image_pil, bbox):
-        """使用 processor 或直接模型 API"""
-        import mlx.core as mx
-
-        h, w = image_pil.size[1], image_pil.size[0]
-        x1, y1, x2, y2 = bbox[0]
-
-        # 尝试使用 processor
-        if self._use_processor and self.processor is not None:
-            try:
-                # 设置图像
-                state = self.processor.set_image(image_pil)
-                mx.eval(state) if isinstance(state, dict) else mx.eval()
-
-                # 将 bbox 转换为几何提示格式 [center_x, center_y, width, height] (归一化)
-                x1_norm, y1_norm = float(x1 / w), float(y1 / h)
-                x2_norm, y2_norm = float(x2 / w), float(y2 / h)
-                center_x = float((x1_norm + x2_norm) / 2.0)
-                center_y = float((y1_norm + y2_norm) / 2.0)
-                box_width = float(x2_norm - x1_norm)
-                box_height = float(y2_norm - y1_norm)
-                box_list = [center_x, center_y, box_width, box_height]
-
-                # 添加几何提示
-                state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
-                mx.eval(state_after_box) if isinstance(state_after_box, dict) else mx.eval()
-
-                if state_after_box is None:
-                    logger.debug("state_after_box is None after add_geometric_prompt")
-                    return None
-
-                # 提取 masks 和 scores
-                if isinstance(state_after_box, dict):
-                    masks_raw = state_after_box.get("masks", None)
-                    scores_raw = state_after_box.get("scores", None)
-
-                    if masks_raw is not None:
-                        try:
-                            masks = np.asarray(masks_raw)
-                            scores = np.asarray(scores_raw) if scores_raw is not None else None
-
-                            # 处理不同维度的 masks
-                            if masks.ndim == 4:
-                                # (N, 1, H, W) 或 (N, M, H, W) - 取第一个 batch，选择最佳 mask
-                                if masks.shape[0] > 0:
-                                    masks = masks[0]  # (1, H, W) 或 (M, H, W)
-                                    if masks.ndim == 3 and masks.shape[0] > 1:
-                                        # (M, H, W) - 多个 mask，选择最佳
-                                        if scores is not None:
-                                            scores_flat = scores.flatten() if scores.ndim > 1 else scores
-                                            if len(scores_flat) >= masks.shape[0]:
-                                                best_idx = np.argmax(scores_flat[:masks.shape[0]])
-                                                mask = masks[best_idx]
-                                            else:
-                                                mask = masks[0]
-                                        else:
-                                            mask = masks[0]
-                                    elif masks.ndim == 3 and masks.shape[0] == 1:
-                                        # (1, H, W)
-                                        mask = masks[0]
-                                    elif masks.ndim == 2:
-                                        # (H, W)
-                                        mask = masks
-                                    else:
-                                        logger.debug(f"Invalid 4D masks shape after squeeze: {masks.shape}")
-                                        return None
-                                else:
-                                    logger.debug(f"Empty 4D masks: {masks.shape}")
-                                    return None
-                            elif masks.ndim == 3 and masks.shape[0] > 0:
-                                # (M, H, W) - 多个 mask，选择最佳
-                                if scores is not None and len(scores) == masks.shape[0]:
-                                    best_idx = np.argmax(scores)
-                                    mask = masks[best_idx]
-                                else:
-                                    mask = masks[0]
-                            elif masks.ndim == 2:
-                                # (H, W) - 单个 mask
-                                mask = masks
-                            else:
-                                logger.debug(f"Invalid masks shape: {masks.shape if hasattr(masks, 'shape') else type(masks)}")
-                                return None
-
-                            # 调整尺寸
-                            if mask.shape != (h, w):
-                                mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-                            else:
-                                mask = mask.astype(bool)
-
-                            return {"masks": mask, "scores": scores}
-                        except Exception as e:
-                            logger.warning(f"Failed to process masks: {e}")
-                            return None
-                    else:
-                        logger.debug("masks_raw is None in state_after_box")
-                        return None
-                else:
-                    logger.debug(f"state_after_box is not a dict: {type(state_after_box)}")
-                    return None
-
-            except Exception as e:
-                logger.warning(f"Processor-based inference failed: {e}", exc_info=True)
-
-        # 回退：返回 None，让上层循环处理
-        if not self._use_processor or self.processor is None:
-            logger.debug("Processor not available, returning None")
-        else:
-            logger.debug("All processor methods failed, returning None")
-        return None
-
-    def _direct_batch_inference(self, image_pil, bboxes):
-        """批量处理 - 逐个处理每个 bbox 然后合并"""
-        h, w = image_pil.size[1], image_pil.size[0]
-
-        # 逐个处理每个 bbox 然后合并
-        all_masks = []
-        failed_count = 0
         
-        for i, bbox in enumerate(bboxes):
+        h, w = image_pil.size[1], image_pil.size[0]
+        mask_total = None
+        
+        with self._lock:
             try:
-                single_result = self._direct_inference(image_pil, bbox.reshape(1, 4))
-                if single_result and "masks" in single_result:
-                    all_masks.append(single_result["masks"])
-                else:
-                    failed_count += 1
-                    logger.debug(f"Bbox {i} inference returned no mask")
+                # 设置图片（如果需要）
+                image_id = id(image_pil)
+                if self._current_image_id != image_id:
+                    self._current_state = self.processor.set_image(image_pil)
+                    self._current_image_id = image_id
+                
+                # 重置所有提示
+                self.processor.reset_all_prompts(self._current_state)
+                
+                # 添加所有框作为正样本
+                for box in bboxes:
+                    x1, y1, x2, y2 = box
+                    cx = (x1 + x2) / 2.0 / w
+                    cy = (y1 + y2) / 2.0 / h
+                    box_w = (x2 - x1) / w
+                    box_h = (y2 - y1) / h
+                    box_normalized = [cx, cy, box_w, box_h]
+                    
+                    # 添加几何提示
+                    self._current_state = self.processor.add_geometric_prompt(
+                        box_normalized, True, self._current_state
+                    )
+                
+                # 从最终 state 中提取所有 masks 并合并
+                if "masks" in self._current_state:
+                    masks = self._current_state["masks"]
+                    if masks is not None and len(masks) > 0:
+                        import mlx.core as mx
+                        # 合并所有 masks
+                        for i, mask in enumerate(masks):
+                            if isinstance(mask, mx.array):
+                                mask_np = np.array(mask)
+                            else:
+                                mask_np = np.array(mask)
+                            
+                            if mask_np.ndim == 3:
+                                mask_np = mask_np[0]
+                            elif mask_np.ndim > 2:
+                                mask_np = mask_np.squeeze()
+                            
+                            if mask_np.dtype != bool:
+                                mask_np = mask_np > 0.5
+                            
+                            if mask_np.shape != (h, w):
+                                mask_uint8 = (mask_np.astype(np.uint8) * 255) if mask_np.dtype == bool else mask_np.astype(np.uint8)
+                                mask_np = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                            
+                            if mask_total is None:
+                                mask_total = mask_np.copy()
+                            else:
+                                mask_total |= mask_np
+                
+                if mask_total is None:
+                    return np.zeros((h, w), dtype=bool)
+                
+                return mask_total.astype(bool)
+                
             except Exception as e:
-                failed_count += 1
-                logger.debug(f"Bbox {i} inference failed: {e}")
-
-        if not all_masks:
-            logger.warning(f"No valid masks generated for {len(bboxes)} bboxes (failed: {failed_count})")
-            return None
-
-        if failed_count > 0:
-            logger.info(f"Generated {len(all_masks)}/{len(bboxes)} masks, {failed_count} failed")
-
-        # 合并所有 mask
-        try:
-            combined_mask = np.any(all_masks, axis=0)
-            return {"masks": combined_mask}
-        except Exception as e:
-            logger.error(f"Failed to combine masks: {e}", exc_info=True)
-            return None
-
+                logger.error(f"Error generating mask from bboxes with MLX SAM3: {e}", exc_info=True)
+                return None
+    
+    def generate_mask_from_text_prompt(
+        self,
+        image_pil: Image.Image,
+        text_prompt: str,
+    ) -> Optional[np.ndarray]:
+        """
+        从文本提示生成 mask（MLX 实现）
+        
+        Args:
+            image_pil: PIL Image 对象
+            text_prompt: 文本提示字符串
+        
+        Returns:
+            Binary mask as numpy array of shape (H, W), dtype=bool, or None if failed
+        """
+        h, w = image_pil.size[1], image_pil.size[0]
+        
+        with self._lock:
+            try:
+                # 检查是否需要设置新图片
+                image_id = id(image_pil)
+                if self._current_image_id != image_id:
+                    self._current_state = self.processor.set_image(image_pil)
+                    self._current_image_id = image_id
+                
+                # 设置文本提示并运行推理
+                state = self.processor.set_text_prompt(text_prompt, self._current_state)
+                self._current_state = state
+                
+                # 从 state 中提取 mask
+                if "masks" in state:
+                    masks = state["masks"]
+                    if masks is not None and len(masks) > 0:
+                        import mlx.core as mx
+                        # 合并所有 masks（如果有多个）
+                        mask_total = None
+                        for mask in masks:
+                            if isinstance(mask, mx.array):
+                                mask_np = np.array(mask)
+                            else:
+                                mask_np = np.array(mask)
+                            
+                            # 确保是 2D 布尔数组
+                            if mask_np.ndim == 3:
+                                mask_np = mask_np[0]
+                            elif mask_np.ndim > 2:
+                                mask_np = mask_np.squeeze()
+                            
+                            # 转换为布尔类型
+                            if mask_np.dtype != bool:
+                                mask_np = mask_np > 0.5
+                            
+                            # 确保尺寸匹配
+                            if mask_np.shape != (h, w):
+                                mask_uint8 = (mask_np.astype(np.uint8) * 255) if mask_np.dtype == bool else mask_np.astype(np.uint8)
+                                mask_np = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                            
+                            if mask_total is None:
+                                mask_total = mask_np.copy()
+                            else:
+                                mask_total |= mask_np
+                        
+                        if mask_total is not None:
+                            return mask_total.astype(bool)
+                
+                return None
+                
+            except Exception as e:
+                logger.error(f"Error generating mask from text prompt with MLX SAM3: {e}", exc_info=True)
+                return None
+    
     @property
     def backend_name(self) -> str:
         return "mlx"
+
 
 class SAM3Factory:
     """SAM3 工厂类，根据配置自动创建对应的后端实例"""

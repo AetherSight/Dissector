@@ -25,6 +25,7 @@ from PIL import Image
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 from .sam3_backend import SAM3Factory, SAM3Base
+from .body_parts_segmentation import segment_body_parts_with_sam3
 
 
 def get_device() -> torch.device:
@@ -435,6 +436,41 @@ def save_debug_overlay(image_bgr: np.ndarray, mask: np.ndarray, output_path: str
     cv2.drawContours(vis, contours, -1, color, 2)
     cv2.putText(vis, title, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
     cv2.imwrite(output_path, vis)
+
+
+def process_image_simple(
+    image_pil: Image.Image,
+    sam3_model: SAM3Base,
+    processor: Optional[AutoProcessor] = None,
+    dino_model: Optional[AutoModelForZeroShotObjectDetection] = None,
+    device: Optional[torch.device] = None,
+    box_threshold: float = 0.3,
+    text_threshold: float = 0.25,
+) -> Dict[str, str]:
+    """
+    简化的图片处理函数：传入图片，返回5个部位的抠图（base64编码）
+    
+    Args:
+        image_pil: PIL Image 对象（RGB格式）
+        sam3_model: SAM3Base 实例
+        processor: DINO processor（仅 Ultralytics 需要）
+        dino_model: DINO model（仅 Ultralytics 需要）
+        device: PyTorch device（仅 Ultralytics 需要）
+        box_threshold: DINO 框阈值（仅 Ultralytics 需要）
+        text_threshold: DINO 文本阈值（仅 Ultralytics 需要）
+    
+    Returns:
+        字典，包含5个部位的 base64 编码图片
+    """
+    return segment_body_parts_with_sam3(
+        image_pil=image_pil,
+        sam3_model=sam3_model,
+        processor=processor,
+        dino_model=dino_model,
+        device=device,
+        box_threshold=box_threshold,
+        text_threshold=text_threshold,
+    )
 
 
 def process_image(
