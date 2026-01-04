@@ -76,13 +76,13 @@ def main():
     logger.info(f"Processing image: {args.image_path}")
     try:
         results = process_image(
-            image_path=args.image_path,
-            processor=processor,
-            dino_model=dino_model,
-            sam3_model=sam3_model,
-            device=device,
-            box_threshold=args.box_threshold,
-            text_threshold=args.text_threshold,
+            args.image_path,
+            processor,
+            dino_model,
+            sam3_model,
+            device,
+            args.box_threshold,
+            args.text_threshold,
         )
         
         if not results:
@@ -122,11 +122,11 @@ def main():
         logger.info("Testing background removal...")
         try:
             bg_result = remove_background(
-                image_path=args.image_path,
-                processor=processor,
-                dino_model=dino_model,
-                sam3_model=sam3_model,
-                device=device,
+                args.image_path,
+                processor,
+                dino_model,
+                sam3_model,
+                device,
             )
             
             # Save background removed image
