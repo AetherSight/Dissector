@@ -22,7 +22,7 @@ class SAM3Base(ABC):
         self,
         image_pil: Image.Image,
         bbox: np.ndarray,
-    ) -> np.ndarray:
+    ) -> Optional[np.ndarray]:
         """
         从边界框生成二进制 mask
         
@@ -31,7 +31,7 @@ class SAM3Base(ABC):
             bbox: numpy array of shape (1, 4) with [x1, y1, x2, y2] 像素坐标
         
         Returns:
-            Binary mask as numpy array of shape (H, W), dtype=bool
+            Binary mask as numpy array of shape (H, W), dtype=bool, or None if failed
         """
         pass
     
@@ -114,11 +114,9 @@ class UltralyticsSAM3(SAM3Base):
         """从边界框生成 mask（Ultralytics 实现）"""
         h, w = image_pil.size[1], image_pil.size[0]
         
-        # 计算 imgsz，必须是 14 的倍数
         imgsz = max(h, w)
         imgsz = ((imgsz + 13) // 14) * 14
         
-        # 调用 Ultralytics SAM
         results = self.model(image_pil, bboxes=bbox, imgsz=imgsz, verbose=False)
         
         if results and len(results) > 0:
@@ -126,7 +124,6 @@ class UltralyticsSAM3(SAM3Base):
             if hasattr(result, 'masks') and result.masks is not None:
                 masks = result.masks.data.cpu().numpy()
                 
-                # 处理不同维度的 mask
                 if masks.ndim == 3:
                     mask = np.any(masks, axis=0).astype(bool)
                 elif masks.ndim == 2:
@@ -138,18 +135,17 @@ class UltralyticsSAM3(SAM3Base):
                     elif mask.ndim == 2:
                         mask = mask.astype(bool)
                     else:
-                        return np.zeros((h, w), dtype=bool)
+                        return None
                 
                 if mask.ndim != 2:
-                    return np.zeros((h, w), dtype=bool)
+                    return None
                 
-                # 确保尺寸匹配
                 if mask.shape != (h, w):
                     mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
                 
                 return mask
         
-        return np.zeros((h, w), dtype=bool)
+        return None
     
     @property
     def backend_name(self) -> str:

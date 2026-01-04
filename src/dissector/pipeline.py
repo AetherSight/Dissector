@@ -259,8 +259,19 @@ def mask_from_boxes(
         x1, y1, x2, y2 = box
         bbox = np.array([[x1, y1, x2, y2]])
         
-        # 使用统一接口生成 mask
         mask = sam3_model.generate_mask_from_bbox(image_pil, bbox)
+        
+        if mask is None:
+            continue
+        
+        if mask.ndim != 2:
+            continue
+        
+        if mask.shape != (h, w):
+            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+        
+        if np.sum(mask) == 0:
+            continue
 
         if mask_total is None:
             mask_total = mask.copy()
@@ -346,8 +357,16 @@ def remove_background(
             x1, y1, x2, y2 = box
             bbox = np.array([[x1, y1, x2, y2]])
             
-            # 使用统一接口生成 mask
             mask = sam3_model.generate_mask_from_bbox(image_pil, bbox)
+            
+            if mask is None:
+                continue
+            
+            if mask.ndim != 2:
+                continue
+            
+            if mask.shape != (h, w):
+                mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
             
             if mask_total is None:
                 mask_total = mask.copy()
