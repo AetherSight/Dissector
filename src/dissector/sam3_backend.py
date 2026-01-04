@@ -202,11 +202,7 @@ class MLXSAM3(SAM3Base):
         """从边界框生成 mask（MLX 实现）"""
         h, w = image_pil.size[1], image_pil.size[0]
         
-        # 每次调用都重新设置图像，避免状态冲突
-        # 这对于多个 bbox 的情况更安全
-        logger.debug(f"[MLX] Setting image, size: {w}x{h}")
         state = self.processor.set_image(image_pil)
-        logger.debug(f"[MLX] Image set, state type: {type(state)}, is_dict: {isinstance(state, dict)}")
         
         x1, y1, x2, y2 = bbox[0]
         x1_norm, y1_norm = float(x1 / w), float(y1 / h)
@@ -218,13 +214,10 @@ class MLXSAM3(SAM3Base):
         box_height = float(y2_norm - y1_norm)
         
         box_list = [center_x, center_y, box_width, box_height]
-        logger.debug(f"[MLX] Bbox converted to [cx, cy, w, h]: {box_list} (types: {[type(x).__name__ for x in box_list]})")
         
         try:
-            logger.debug("[MLX] Calling add_geometric_prompt(box, label=True, state)")
             state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
             api_method = "add_geometric_prompt"
-            logger.debug(f"[MLX] add_geometric_prompt succeeded, state type: {type(state_after_box)}")
         except Exception as e:
             logger.error(f"[MLX] add_geometric_prompt failed: {e}", exc_info=True)
             logger.warning("[MLX] Falling back to direct box assignment (masks may not be generated)")
@@ -241,9 +234,6 @@ class MLXSAM3(SAM3Base):
             logger.error("[MLX] All methods failed to set box prompt")
             return np.zeros((h, w), dtype=bool)
         
-        logger.debug(f"[MLX] Using API method: {api_method}")
-        logger.debug(f"[MLX] State after box keys: {list(state_after_box.keys()) if isinstance(state_after_box, dict) else 'N/A'}")
-        
         masks = None
         
         if isinstance(state_after_box, dict):
@@ -259,91 +249,59 @@ class MLXSAM3(SAM3Base):
                         masks = np.array(masks_raw)
                     
                     mask_count = len(masks)
-                    logger.debug(f"[MLX] Masks from state after {api_method}, count: {mask_count}, type: {type(masks_raw)} -> {type(masks)}")
                     if mask_count > 0:
-                        logger.info(f"[MLX] Successfully generated {mask_count} mask(s) using {api_method}!")
+                        logger.info(f"[MLX] Generated {mask_count} mask(s)")
                 except Exception as e:
                     logger.error(f"[MLX] Error converting masks to numpy: {e}", exc_info=True)
                     masks = None
             else:
-                logger.debug(f"[MLX] No masks in state after {api_method}")
                 masks = None
         
         masks_valid = masks is not None and len(masks) > 0
         
         if not masks_valid:
-            logger.debug("[MLX] No masks in state, attempting to generate with model...")
-            
-            # 方法1: 尝试调用 model 的 o2m_mask_predict 方法
             if hasattr(self.model, 'o2m_mask_predict'):
                 try:
-                    logger.debug("[MLX] Trying model.o2m_mask_predict()")
-                    # o2m_mask_predict 可能需要 state 作为参数
                     result = self.model.o2m_mask_predict(state_after_box)
                     if isinstance(result, dict):
                         masks_raw = result.get("masks", [])
-                        # 转换为 numpy array
                         masks = np.array(masks_raw) if hasattr(masks_raw, '__array__') else np.array(masks_raw)
-                        logger.debug(f"[MLX] o2m_mask_predict() returned masks, count: {len(masks)}")
                         masks_valid = len(masks) > 0
                     elif result is not None:
-                        # 如果返回的不是 dict，尝试提取 masks
                         if hasattr(result, 'masks'):
                             masks = result.masks
-                            logger.debug(f"[MLX] o2m_mask_predict() returned object with masks")
-                except Exception as e:
-                    logger.debug(f"[MLX] model.o2m_mask_predict() failed: {e}")
+                except Exception:
+                    pass
             
-            # 方法2: 尝试调用 model 的 inst_interactive_predictor 方法
             if not masks_valid and hasattr(self.model, 'inst_interactive_predictor'):
                 try:
-                    logger.debug("[MLX] Trying model.inst_interactive_predictor()")
                     result = self.model.inst_interactive_predictor(state_after_box)
                     if isinstance(result, dict):
                         masks_raw = result.get("masks", [])
-                        # 转换为 numpy array
-                        if hasattr(masks_raw, '__array__'):
-                            masks = np.array(masks_raw)
-                        else:
-                            masks = np.array(masks_raw)
-                        logger.debug(f"[MLX] inst_interactive_predictor() returned masks, count: {len(masks)}")
+                        masks = np.array(masks_raw) if hasattr(masks_raw, '__array__') else np.array(masks_raw)
                         masks_valid = len(masks) > 0
-                except Exception as e:
-                    logger.debug(f"[MLX] model.inst_interactive_predictor() failed: {e}")
+                except Exception:
+                    pass
             
-            # 方法3: 尝试直接调用 model（无参数，使用内部 state）
             if not masks_valid:
                 try:
-                    logger.debug("[MLX] Trying model() with no args (using internal state)")
-                    # 某些 MLX 模型可能需要通过 processor 来调用
-                    # 或者 model 需要从 state 中读取信息
                     if isinstance(state_after_box, dict) and 'backbone_out' in state_after_box:
-                        # 尝试使用 state 中的信息调用 model
                         result = self.model()
                         if isinstance(result, dict):
                             masks_raw = result.get("masks", [])
-                            # 转换为 numpy array
-                            if hasattr(masks_raw, '__array__'):
-                                masks = np.array(masks_raw)
-                            else:
-                                masks = np.array(masks_raw)
-                            logger.debug(f"[MLX] model() returned masks, count: {len(masks)}")
+                            masks = np.array(masks_raw) if hasattr(masks_raw, '__array__') else np.array(masks_raw)
                             masks_valid = len(masks) > 0
-                except Exception as e:
-                    logger.debug(f"[MLX] model() failed: {e}")
+                except Exception:
+                    pass
             
-            # 方法4: 尝试通过 processor 调用 model
             if not masks_valid and hasattr(self.processor, 'model'):
                 try:
-                    logger.debug("[MLX] Trying processor.model() with state")
-                    # processor.model 可能可以直接处理 state
                     if hasattr(self.processor.model, 'o2m_mask_predict'):
                         result = self.processor.model.o2m_mask_predict(state_after_box)
                         if isinstance(result, dict):
                             masks = result.get("masks", [])
-                            logger.debug(f"[MLX] processor.model.o2m_mask_predict() returned masks")
-                except Exception as e:
-                    logger.debug(f"[MLX] processor.model() approach failed: {e}")
+                except Exception:
+                    pass
         
         # 如果还是没有 masks，尝试从 state_after_box 中获取
         if masks is None:
@@ -376,10 +334,8 @@ class MLXSAM3(SAM3Base):
             if scores is not None and len(scores) == mask_array.shape[0]:
                 best_idx = np.argmax(scores)
                 mask = mask_array[best_idx]
-                logger.debug(f"[MLX] Selected mask {best_idx} with score {scores[best_idx]:.4f} out of {mask_array.shape[0]} masks")
             else:
                 mask = np.any(mask_array, axis=0).astype(bool)
-                logger.debug(f"[MLX] Merged all {mask_array.shape[0]} masks (no scores available)")
         elif mask_array.ndim == 2:
             mask = mask_array.astype(bool)
         else:
@@ -393,24 +349,17 @@ class MLXSAM3(SAM3Base):
         while mask.ndim > 2:
             mask = mask[0]
         
-        logger.debug(f"[MLX] Mask converted, dtype: {mask.dtype}, shape: {mask.shape}, min: {mask.min()}, max: {mask.max()}")
-        
         if mask.dtype != bool:
             threshold = 0.5 if mask.max() <= 1.0 else 127
             mask = mask > threshold
-            logger.debug(f"[MLX] Mask thresholded with {threshold}, new dtype: {mask.dtype}")
         
         if mask.shape != (h, w):
-            logger.debug(f"[MLX] Resizing mask from {mask.shape} to ({h}, {w})")
             mask_uint8 = (mask.astype(np.uint8) * 255) if mask.dtype == bool else mask.astype(np.uint8)
             if mask_uint8.ndim != 2:
                 mask_uint8 = mask_uint8.squeeze()
             mask_pil = Image.fromarray(mask_uint8, mode='L')
             mask_pil = mask_pil.resize((w, h), Image.NEAREST)
             mask = np.array(mask_pil) > 127
-        
-        mask_sum = np.sum(mask)
-        logger.debug(f"[MLX] Final mask: shape={mask.shape}, dtype={mask.dtype}, sum={mask_sum}, coverage={mask_sum/(h*w):.2%}")
         
         return mask.astype(bool)
     
