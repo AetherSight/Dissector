@@ -364,6 +364,7 @@ class MLXSAM3(SAM3Base):
                 mx.eval(state_after_box) if isinstance(state_after_box, dict) else mx.eval()
 
                 if state_after_box is None:
+                    logger.debug("state_after_box is None after add_geometric_prompt")
                     return None
 
                 # 提取 masks 和 scores
@@ -372,34 +373,48 @@ class MLXSAM3(SAM3Base):
                     scores_raw = state_after_box.get("scores", None)
 
                     if masks_raw is not None:
-                        masks = np.asarray(masks_raw)
-                        scores = np.asarray(scores_raw) if scores_raw is not None else None
+                        try:
+                            masks = np.asarray(masks_raw)
+                            scores = np.asarray(scores_raw) if scores_raw is not None else None
 
-                        # 选择最佳 mask
-                        if masks.ndim == 3 and masks.shape[0] > 0:
-                            if scores is not None and len(scores) == masks.shape[0]:
-                                best_idx = np.argmax(scores)
-                                mask = masks[best_idx]
+                            # 选择最佳 mask
+                            if masks.ndim == 3 and masks.shape[0] > 0:
+                                if scores is not None and len(scores) == masks.shape[0]:
+                                    best_idx = np.argmax(scores)
+                                    mask = masks[best_idx]
+                                else:
+                                    mask = masks[0]
+                            elif masks.ndim == 2:
+                                mask = masks
                             else:
-                                mask = masks[0]
-                        elif masks.ndim == 2:
-                            mask = masks
-                        else:
+                                logger.debug(f"Invalid masks shape: {masks.shape if hasattr(masks, 'shape') else type(masks)}")
+                                return None
+
+                            # 调整尺寸
+                            if mask.shape != (h, w):
+                                mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                            else:
+                                mask = mask.astype(bool)
+
+                            return {"masks": mask, "scores": scores}
+                        except Exception as e:
+                            logger.warning(f"Failed to process masks: {e}")
                             return None
-
-                        # 调整尺寸
-                        if mask.shape != (h, w):
-                            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-                        else:
-                            mask = mask.astype(bool)
-
-                        return {"masks": mask, "scores": scores}
+                    else:
+                        logger.debug("masks_raw is None in state_after_box")
+                        return None
+                else:
+                    logger.debug(f"state_after_box is not a dict: {type(state_after_box)}")
+                    return None
 
             except Exception as e:
-                logger.warning(f"Processor-based inference failed: {e}")
+                logger.warning(f"Processor-based inference failed: {e}", exc_info=True)
 
         # 回退：返回 None，让上层循环处理
-        logger.error("All MLX inference methods failed, returning None")
+        if not self._use_processor or self.processor is None:
+            logger.debug("Processor not available, returning None")
+        else:
+            logger.debug("All processor methods failed, returning None")
         return None
 
     def _direct_batch_inference(self, image_pil, bboxes):
