@@ -5,7 +5,8 @@ import platform
 import time
 import threading
 from typing import Dict, List, Tuple, Any, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
+# Parallel processing disabled to avoid SIGSEGV and resource leaks
+# from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -543,34 +544,28 @@ def process_image(
         detect_and_store(key, prompts)
         return key, masks.get(key, np.zeros((h, w), dtype=bool))
 
-    logger.info("[STEP] Stage 1: detecting shoes, head, lower_raw, upper_raw (parallel)...")
+    logger.info("[STEP] Stage 1: detecting shoes, head, lower_raw, upper_raw (sequential)...")
     stage1_start = time.time()
-    executor = None
-    try:
-        executor = ThreadPoolExecutor(max_workers=4)
-        if sam3_model.backend_name == "mlx":
-            futures = {
-                executor.submit(process_sam3_pipelined, "shoes", FOOTWEAR_PROMPTS): "shoes",
-                executor.submit(process_sam3_pipelined, "head", HEADWEAR_PROMPTS): "head",
-                executor.submit(process_sam3_pipelined, "lower_raw", LOWER_PROMPTS): "lower_raw",
-                executor.submit(process_sam3_pipelined, "upper_raw", UPPER_PROMPTS): "upper_raw",
-            }
-        else:
-            futures = {
-                executor.submit(process_sam3, "shoes", FOOTWEAR_PROMPTS): "shoes",
-                executor.submit(process_sam3, "head", HEADWEAR_PROMPTS): "head",
-                executor.submit(process_sam3, "lower_raw", LOWER_PROMPTS): "lower_raw",
-                executor.submit(process_sam3, "upper_raw", UPPER_PROMPTS): "upper_raw",
-            }
-        for future in as_completed(futures):
+    
+    # 顺序处理以避免 SIGSEGV 和资源泄漏
+    if sam3_model.backend_name == "mlx":
+        for key, prompts in [("shoes", FOOTWEAR_PROMPTS), ("head", HEADWEAR_PROMPTS), 
+                              ("lower_raw", LOWER_PROMPTS), ("upper_raw", UPPER_PROMPTS)]:
             try:
-                key, mask = future.result()
+                _, mask = process_sam3_pipelined(key, prompts)
                 masks[key] = mask
             except Exception as e:
-                logger.error(f"[PERF] Stage 1 task failed: {e}", exc_info=True)
-    finally:
-        if executor is not None:
-            executor.shutdown(wait=True)
+                logger.error(f"[PERF] Stage 1 task {key} failed: {e}", exc_info=True)
+                masks[key] = np.zeros((h, w), dtype=bool)
+    else:
+        for key, prompts in [("shoes", FOOTWEAR_PROMPTS), ("head", HEADWEAR_PROMPTS), 
+                              ("lower_raw", LOWER_PROMPTS), ("upper_raw", UPPER_PROMPTS)]:
+            try:
+                _, mask = process_sam3(key, prompts)
+                masks[key] = mask
+            except Exception as e:
+                logger.error(f"[PERF] Stage 1 task {key} failed: {e}", exc_info=True)
+                masks[key] = np.zeros((h, w), dtype=bool)
     
     if sam3_model.backend_name == "mlx":
         try:
@@ -622,30 +617,26 @@ def process_image(
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
-    logger.info("[STEP] Stage 2: detecting legs and hands (parallel)...")
+    logger.info("[STEP] Stage 2: detecting legs and hands (sequential)...")
     stage2_start = time.time()
-    executor = None
-    try:
-        executor = ThreadPoolExecutor(max_workers=2)
-        if sam3_model.backend_name == "mlx":
-            futures = {
-                executor.submit(process_sam3_pipelined, "legs", LEG_PROMPTS): "legs",
-                executor.submit(process_sam3_pipelined, "hands", HAND_PROMPTS): "hands",
-            }
-        else:
-            futures = {
-                executor.submit(process_sam3, "legs", LEG_PROMPTS): "legs",
-                executor.submit(process_sam3, "hands", HAND_PROMPTS): "hands",
-            }
-        for future in as_completed(futures):
+    
+    # 顺序处理以避免 SIGSEGV 和资源泄漏
+    if sam3_model.backend_name == "mlx":
+        for key, prompts in [("legs", LEG_PROMPTS), ("hands", HAND_PROMPTS)]:
             try:
-                key, mask = future.result()
+                _, mask = process_sam3_pipelined(key, prompts)
                 masks[key] = mask
             except Exception as e:
-                logger.error(f"[PERF] Stage 2 task failed: {e}", exc_info=True)
-    finally:
-        if executor is not None:
-            executor.shutdown(wait=True)
+                logger.error(f"[PERF] Stage 2 task {key} failed: {e}", exc_info=True)
+                masks[key] = np.zeros((h, w), dtype=bool)
+    else:
+        for key, prompts in [("legs", LEG_PROMPTS), ("hands", HAND_PROMPTS)]:
+            try:
+                _, mask = process_sam3(key, prompts)
+                masks[key] = mask
+            except Exception as e:
+                logger.error(f"[PERF] Stage 2 task {key} failed: {e}", exc_info=True)
+                masks[key] = np.zeros((h, w), dtype=bool)
     
     if sam3_model.backend_name == "mlx":
         try:
