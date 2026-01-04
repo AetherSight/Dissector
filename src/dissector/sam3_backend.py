@@ -268,12 +268,24 @@ class MLXSAM3(SAM3Base):
         points, labels = self._box_to_points(x1, y1, x2, y2, w, h)
 
         with self._gpu_lock:
-            result = self.processor(
-                image=image_pil,
-                points=points,
-                labels=labels,
-                multimask_output=True,
-            )
+            if hasattr(self.processor, "predict"):
+                result = self.processor.predict(
+                    image=image_pil,
+                    points=points,
+                    labels=labels,
+                    multimask_output=True,
+                )
+            elif hasattr(self.processor, "process"):
+                result = self.processor.process(
+                    image=image_pil,
+                    points=points,
+                    labels=labels,
+                    multimask_output=True,
+                )
+            else:
+                raise RuntimeError(
+                    "Sam3Processor has neither predict nor process method"
+                )
 
         if not isinstance(result, dict):
             return None
@@ -287,7 +299,7 @@ class MLXSAM3(SAM3Base):
         if masks.ndim == 2:
             mask = masks
         elif masks.ndim == 3 and masks.shape[0] > 0:
-            # 唯一稳定策略：最大面积
+            # 行为对齐 Ultralytics：最大面积
             areas = masks.reshape(masks.shape[0], -1).sum(axis=1)
             mask = masks[np.argmax(areas)]
         else:
@@ -301,7 +313,7 @@ class MLXSAM3(SAM3Base):
             )
 
         return mask.astype(bool)
-    
+
     @property
     def backend_name(self) -> str:
         return "mlx"
