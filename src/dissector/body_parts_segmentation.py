@@ -72,23 +72,12 @@ BODY_PARTS_PROMPTS = {
         "flat shoe",
     ],
     "head": [
+        "head hair accessory",
+        "head accessory",
+        "hair accessory",
         "head",
-        "human head",
-        "face",
-        "facial area",
         "hair",
-        "hairstyle",
-        "ponytail hair",
-        "cat ear",
-        "animal ear",
-        "headwear",
         "hat",
-        "cap",
-        "helmet",
-        "crown",
-        "tiara",
-        "headband",
-        "hood",
     ],
     "hands": [
         "human hand",
@@ -284,6 +273,9 @@ def segment_body_parts_with_sam3(
     # 检查是否使用 Ultralytics（需要 DINO）
     use_dino = sam3_model.backend_name == "ultralytics" and processor is not None and dino_model is not None
     
+    # 存储所有部位的 mask，用于后处理
+    masks_dict: Dict[str, np.ndarray] = {}
+    
     # 对每个部位进行分割
     for part_name, prompts in BODY_PARTS_PROMPTS.items():
         try:
@@ -317,9 +309,8 @@ def segment_body_parts_with_sam3(
             
             if mask is None or mask.size == 0:
                 logger.warning(f"No mask found for {part_name}")
-                # 返回白色图片
-                white_img = np.full((h, w, 3), 255, dtype=np.uint8)
-                results[part_name] = encode_bgr_to_base64(white_img)
+                # 存储空 mask
+                masks_dict[part_name] = np.zeros((h, w), dtype=bool)
                 continue
             
             # 确保 mask 是正确的形状和类型
@@ -330,19 +321,65 @@ def segment_body_parts_with_sam3(
             # 清理 mask
             mask = remove_small_components(mask, min_area_ratio=0.001)
             
-            # 生成白色背景的抠图
-            cropped_img = render_white_bg(image_bgr, mask)
-            
-            # 编码为 base64
-            results[part_name] = encode_bgr_to_base64(cropped_img, ext=".jpg")
-            
-            logger.info(f"Successfully segmented {part_name}")
+            # 存储 mask 用于后处理
+            masks_dict[part_name] = mask
             
         except Exception as e:
             logger.error(f"Error segmenting {part_name}: {e}", exc_info=True)
-            # 返回白色图片作为fallback
-            white_img = np.full((h, w, 3), 255, dtype=np.uint8)
-            results[part_name] = encode_bgr_to_base64(white_img)
+            # 存储空 mask
+            masks_dict[part_name] = np.zeros((h, w), dtype=bool)
+    
+    # 后处理：排除重叠区域
+    # upper 排除 head 和 shoes
+    if "upper" in masks_dict:
+        upper_mask = masks_dict["upper"].copy()
+        if "head" in masks_dict:
+            upper_mask = upper_mask & (~masks_dict["head"])
+        if "shoes" in masks_dict:
+            upper_mask = upper_mask & (~masks_dict["shoes"])
+        masks_dict["upper"] = remove_small_components(upper_mask, min_area_ratio=0.001)
+    
+    # lower 排除 shoes
+    if "lower" in masks_dict:
+        lower_mask = masks_dict["lower"].copy()
+        if "shoes" in masks_dict:
+            lower_mask = lower_mask & (~masks_dict["shoes"])
+        masks_dict["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+    
+    # upper 和 lower 的重叠处理
+    if "upper" in masks_dict and "lower" in masks_dict:
+        upper_mask = masks_dict["upper"]
+        lower_mask = masks_dict["lower"]
+        overlap = upper_mask & lower_mask
+        if np.any(overlap):
+            upper_area = np.sum(upper_mask)
+            overlap_area = np.sum(overlap)
+            overlap_ratio = overlap_area / max(upper_area, 1)
+            
+            if overlap_ratio > 0.1:
+                # 重叠区域归 upper
+                upper_mask = upper_mask | overlap
+                lower_mask = lower_mask & (~overlap)
+                masks_dict["upper"] = remove_small_components(upper_mask, min_area_ratio=0.001)
+                masks_dict["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+            else:
+                # 重叠区域归 lower
+                upper_mask = upper_mask & (~overlap)
+                lower_mask = lower_mask | overlap
+                masks_dict["upper"] = remove_small_components(upper_mask, min_area_ratio=0.001)
+                masks_dict["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+    
+    # 生成最终结果
+    for part_name in BODY_PARTS_PROMPTS.keys():
+        mask = masks_dict.get(part_name, np.zeros((h, w), dtype=bool))
+        
+        # 生成白色背景的抠图
+        cropped_img = render_white_bg(image_bgr, mask)
+        
+        # 编码为 base64
+        results[part_name] = encode_bgr_to_base64(cropped_img, ext=".jpg")
+        
+        logger.info(f"Successfully segmented {part_name}")
     
     return results
 
