@@ -328,11 +328,14 @@ class MLXSAM3(SAM3Base):
                     self._current_image_id = image_id
                 
                 # 转换 bbox 为 MLX SAM3 格式: [center_x, center_y, width, height] 归一化到 [0, 1]
-                x1, y1, x2, y2 = bbox[0]
-                cx = (x1 + x2) / 2.0 / w
-                cy = (y1 + y2) / 2.0 / h
-                box_w = (x2 - x1) / w
-                box_h = (y2 - y1) / h
+                # 确保从 numpy array 中提取的值都转换为 Python 原生类型
+                x1, y1, x2, y2 = [float(v) for v in bbox[0]]
+                w, h = float(w), float(h)
+                # 计算并确保所有中间值都是 Python float
+                cx = float((x1 + x2) / 2.0 / w)
+                cy = float((y1 + y2) / 2.0 / h)
+                box_w = float((x2 - x1) / w)
+                box_h = float((y2 - y1) / h)
                 box_normalized = [cx, cy, box_w, box_h]
                 
                 # 添加几何提示并运行推理
@@ -407,12 +410,15 @@ class MLXSAM3(SAM3Base):
                 self.processor.reset_all_prompts(self._current_state)
                 
                 # 添加所有框作为正样本
+                w, h = float(w), float(h)  # 确保 w, h 是 Python float
                 for box in bboxes:
-                    x1, y1, x2, y2 = box
-                    cx = (x1 + x2) / 2.0 / w
-                    cy = (y1 + y2) / 2.0 / h
-                    box_w = (x2 - x1) / w
-                    box_h = (y2 - y1) / h
+                    # 确保从 numpy array 中提取的值都转换为 Python 原生类型
+                    x1, y1, x2, y2 = [float(v) for v in box]
+                    # 计算并确保所有中间值都是 Python float
+                    cx = float((x1 + x2) / 2.0 / w)
+                    cy = float((y1 + y2) / 2.0 / h)
+                    box_w = float((x2 - x1) / w)
+                    box_h = float((y2 - y1) / h)
                     box_normalized = [cx, cy, box_w, box_h]
                     
                     # 添加几何提示
