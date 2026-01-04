@@ -362,17 +362,18 @@ class MLXSAM3(SAM3Base):
             return np.zeros((h, w), dtype=bool)
         
         if isinstance(masks, (list, tuple)):
-            mask = masks[0]
+            mask_array = np.array([np.array(m) if hasattr(m, '__array__') else m for m in masks])
         else:
-            mask = masks
+            mask_array = np.array(masks) if hasattr(masks, '__array__') else np.array(masks)
         
-        if hasattr(mask, '__array__'):
-            mask = np.array(mask)
+        if mask_array.ndim == 3:
+            mask = np.any(mask_array, axis=0).astype(bool)
+        elif mask_array.ndim == 2:
+            mask = mask_array.astype(bool)
         else:
-            mask = np.array(mask)
-        
-        while mask.ndim > 2:
-            mask = mask[0]
+            while mask_array.ndim > 2:
+                mask_array = mask_array[0]
+            mask = mask_array.astype(bool)
         
         if mask.ndim == 1:
             mask = mask.reshape((h, w))
