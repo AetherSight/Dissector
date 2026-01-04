@@ -301,6 +301,10 @@ class MLXSAM3(SAM3Base):
             )
 
         return mask.astype(bool)
+    
+    @property
+    def backend_name(self) -> str:
+        return "mlx"
 
 
 class SAM3Factory:
