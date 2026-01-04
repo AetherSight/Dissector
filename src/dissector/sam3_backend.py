@@ -238,6 +238,8 @@ class UltralyticsSAM3(SAM3Base):
 class MLXSAM3(SAM3Base):
     """MLX SAM3 实现，针对 Apple Silicon 优化"""
     
+    _gpu_lock = threading.Lock()
+    
     def __init__(self, model_path: Optional[str] = None):
         """
         初始化 MLX SAM3
@@ -269,9 +271,6 @@ class MLXSAM3(SAM3Base):
             self._current_state = None
             self._current_image_id = None
             
-            # 线程安全锁（MLX 支持多线程，但需要保护共享资源）
-            self._lock = threading.Lock()
-            
         except ImportError as e:
             logger.error(f"Failed to import MLX SAM3: {e}")
             raise RuntimeError("MLX SAM3 is required on macOS") from e
@@ -284,7 +283,7 @@ class MLXSAM3(SAM3Base):
         """从边界框生成 mask（MLX 实现）"""
         h, w = image_pil.size[1], image_pil.size[0]
         
-        with self._lock:
+        with MLXSAM3._gpu_lock:
             state = self.processor.set_image(image_pil)
             try:
                 import mlx.core as mx
@@ -304,12 +303,12 @@ class MLXSAM3(SAM3Base):
         box_list = [center_x, center_y, box_width, box_height]
         
         try:
-            with self._lock:
+            with MLXSAM3._gpu_lock:
                 state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
                 try:
                     import mlx.core as mx
-                    mx.eval()
-                except ImportError:
+                    mx.eval(state_after_box) if isinstance(state_after_box, dict) else mx.eval()
+                except (ImportError, AttributeError):
                     pass
             api_method = "add_geometric_prompt"
         except Exception as e:
@@ -356,12 +355,12 @@ class MLXSAM3(SAM3Base):
         if not masks_valid:
             if hasattr(self.model, 'o2m_mask_predict'):
                 try:
-                    with self._lock:
+                    with MLXSAM3._gpu_lock:
                         result = self.model.o2m_mask_predict(state_after_box)
                         try:
                             import mlx.core as mx
-                            mx.eval()
-                        except ImportError:
+                            mx.eval(result) if result is not None else mx.eval()
+                        except (ImportError, AttributeError):
                             pass
                     if isinstance(result, dict):
                         masks_raw = result.get("masks", [])
@@ -375,12 +374,12 @@ class MLXSAM3(SAM3Base):
             
             if not masks_valid and hasattr(self.model, 'inst_interactive_predictor'):
                 try:
-                    with self._lock:
+                    with MLXSAM3._gpu_lock:
                         result = self.model.inst_interactive_predictor(state_after_box)
                         try:
                             import mlx.core as mx
-                            mx.eval()
-                        except ImportError:
+                            mx.eval(result) if result is not None else mx.eval()
+                        except (ImportError, AttributeError):
                             pass
                     if isinstance(result, dict):
                         masks_raw = result.get("masks", [])
@@ -392,12 +391,12 @@ class MLXSAM3(SAM3Base):
             if not masks_valid:
                 try:
                     if isinstance(state_after_box, dict) and 'backbone_out' in state_after_box:
-                        with self._lock:
+                        with MLXSAM3._gpu_lock:
                             result = self.model()
                             try:
                                 import mlx.core as mx
-                                mx.eval()
-                            except ImportError:
+                                mx.eval(result) if result is not None else mx.eval()
+                            except (ImportError, AttributeError):
                                 pass
                         if isinstance(result, dict):
                             masks_raw = result.get("masks", [])
@@ -409,12 +408,12 @@ class MLXSAM3(SAM3Base):
             if not masks_valid and hasattr(self.processor, 'model'):
                 try:
                     if hasattr(self.processor.model, 'o2m_mask_predict'):
-                        with self._lock:
+                        with MLXSAM3._gpu_lock:
                             result = self.processor.model.o2m_mask_predict(state_after_box)
                             try:
                                 import mlx.core as mx
-                                mx.eval()
-                            except ImportError:
+                                mx.eval(result) if result is not None else mx.eval()
+                            except (ImportError, AttributeError):
                                 pass
                         if isinstance(result, dict):
                             masks = result.get("masks", [])
@@ -493,12 +492,12 @@ class MLXSAM3(SAM3Base):
         
         h, w = image_pil.size[1], image_pil.size[0]
         
-        with self._lock:
+        with MLXSAM3._gpu_lock:
             state = self.processor.set_image(image_pil)
             try:
                 import mlx.core as mx
-                mx.eval()
-            except ImportError:
+                mx.eval(state) if isinstance(state, dict) else mx.eval()
+            except (ImportError, AttributeError):
                 pass
         
         mask_total = None
@@ -516,12 +515,12 @@ class MLXSAM3(SAM3Base):
             box_list = [center_x, center_y, box_width, box_height]
             
             try:
-                with self._lock:
+                with MLXSAM3._gpu_lock:
                     state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
                     try:
                         import mlx.core as mx
-                        mx.eval()
-                    except ImportError:
+                        mx.eval(state_after_box) if isinstance(state_after_box, dict) else mx.eval()
+                    except (ImportError, AttributeError):
                         pass
             except Exception:
                 continue

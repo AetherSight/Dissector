@@ -3,6 +3,7 @@ import base64
 import logging
 import platform
 import time
+import threading
 from typing import Dict, List, Tuple, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -574,13 +575,15 @@ def process_image(
     if sam3_model.backend_name == "mlx":
         try:
             import mlx.core as mx
-            mx.eval()
-            try:
-                mx.metal.clear_cache()
-                logger.debug("[MLX] Cleared Metal cache after Stage 1")
-            except AttributeError:
-                pass
-            logger.debug("[MLX] Triggered lazy evaluation for Stage 1")
+            from dissector.sam3_backend import MLXSAM3
+            with MLXSAM3._gpu_lock:
+                mx.eval()
+                try:
+                    mx.metal.clear_cache()
+                    logger.debug("[MLX] Cleared Metal cache after Stage 1")
+                except AttributeError:
+                    pass
+            logger.debug("[MLX] Triggered lazy evaluation and cleared cache for Stage 1")
         except ImportError:
             pass
     
