@@ -208,26 +208,18 @@ class MLXSAM3(SAM3Base):
         state = self.processor.set_image(image_pil)
         logger.debug(f"[MLX] Image set, state type: {type(state)}, is_dict: {isinstance(state, dict)}")
         
-        # 转换 bbox 为 MLX 格式
-        # MLX SAM3 需要 [center_x, center_y, width, height] 格式，归一化到 [0, 1]
         x1, y1, x2, y2 = bbox[0]
         x1_norm, y1_norm = float(x1 / w), float(y1 / h)
         x2_norm, y2_norm = float(x2 / w), float(y2 / h)
         
-        # 转换为 [center_x, center_y, width, height]
         center_x = float((x1_norm + x2_norm) / 2.0)
         center_y = float((y1_norm + y2_norm) / 2.0)
         box_width = float(x2_norm - x1_norm)
         box_height = float(y2_norm - y1_norm)
         
-        # add_geometric_prompt 需要纯 Python 的 float 类型列表
-        # 确保所有值都是 Python 原生 float，不是 numpy float32/float64
         box_list = [center_x, center_y, box_width, box_height]
         logger.debug(f"[MLX] Bbox converted to [cx, cy, w, h]: {box_list} (types: {[type(x).__name__ for x in box_list]})")
         
-        # 使用 add_geometric_prompt
-        # 签名: add_geometric_prompt(box: List, label: bool, state: Dict)
-        # label=True 表示正样本（要分割的区域）
         try:
             logger.debug("[MLX] Calling add_geometric_prompt(box, label=True, state)")
             state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
@@ -235,7 +227,6 @@ class MLXSAM3(SAM3Base):
             logger.debug(f"[MLX] add_geometric_prompt succeeded, state type: {type(state_after_box)}")
         except Exception as e:
             logger.error(f"[MLX] add_geometric_prompt failed: {e}", exc_info=True)
-            # Fallback: 直接设置 boxes（但这样不会自动生成 masks）
             logger.warning("[MLX] Falling back to direct box assignment (masks may not be generated)")
             if isinstance(state, dict):
                 state_after_box = state.copy()
@@ -256,24 +247,18 @@ class MLXSAM3(SAM3Base):
         # add_geometric_prompt 会自动运行推理，所以应该已经生成了 masks
         masks = None
         
-        # 检查 state 中是否有 masks，并立即转换为 numpy array
         if isinstance(state_after_box, dict):
             masks_raw = state_after_box.get("masks", None)
             
             if masks_raw is not None:
-                # 立即转换为 numpy array（MLX array 需要转换）
                 try:
-                    # MLX array 有 __array__ 方法，可以直接转换为 numpy
                     if hasattr(masks_raw, '__array__'):
                         masks = np.array(masks_raw)
                     elif isinstance(masks_raw, (list, tuple)):
-                        # 如果是列表，转换每个元素
                         masks = [np.array(m) if hasattr(m, '__array__') else m for m in masks_raw]
                     else:
-                        # 其他类型，尝试直接转换
                         masks = np.array(masks_raw)
                     
-                    # 现在 masks 是 numpy array，可以正常使用 len()
                     mask_count = len(masks)
                     logger.debug(f"[MLX] Masks from state after {api_method}, count: {mask_count}, type: {type(masks_raw)} -> {type(masks)}")
                     if mask_count > 0:
@@ -285,7 +270,6 @@ class MLXSAM3(SAM3Base):
                 logger.debug(f"[MLX] No masks in state after {api_method}")
                 masks = None
         
-        # 检查 masks 是否有效（masks 现在应该是 numpy array）
         masks_valid = masks is not None and len(masks) > 0
         
         # 如果还没有 masks，尝试调用 model 来生成
