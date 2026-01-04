@@ -178,6 +178,51 @@ class UltralyticsSAM3(SAM3Base):
         
         return None
     
+    def generate_mask_from_bboxes(
+        self,
+        image_pil: Image.Image,
+        bboxes: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        """批量从边界框生成 mask（Ultralytics 实现）"""
+        if bboxes.size == 0:
+            h, w = image_pil.size[1], image_pil.size[0]
+            return np.zeros((h, w), dtype=bool)
+        
+        h, w = image_pil.size[1], image_pil.size[0]
+        
+        imgsz = max(h, w)
+        imgsz = ((imgsz + 13) // 14) * 14
+        
+        results = self.model(image_pil, bboxes=bboxes, imgsz=imgsz, verbose=False)
+        
+        if results and len(results) > 0:
+            result = results[0]
+            if hasattr(result, 'masks') and result.masks is not None:
+                masks = result.masks.data.cpu().numpy()
+                
+                if masks.ndim == 3:
+                    mask = np.any(masks, axis=0).astype(bool)
+                elif masks.ndim == 2:
+                    mask = masks.astype(bool)
+                else:
+                    mask = masks.squeeze()
+                    if mask.ndim == 3:
+                        mask = np.any(mask, axis=0).astype(bool)
+                    elif mask.ndim == 2:
+                        mask = mask.astype(bool)
+                    else:
+                        return None
+                
+                if mask.ndim != 2:
+                    return None
+                
+                if mask.shape != (h, w):
+                    mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                
+                return mask
+        
+        return None
+    
     @property
     def backend_name(self) -> str:
         return "ultralytics"

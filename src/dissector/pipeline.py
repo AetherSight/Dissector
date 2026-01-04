@@ -259,18 +259,21 @@ def mask_from_boxes(
     h, w = image_pil.size[1], image_pil.size[0]
     
     if hasattr(sam3_model, 'generate_mask_from_bboxes') and len(boxes) > 1:
+        logger.info(f"[SAM3] Attempting batch processing for {len(boxes)} boxes")
         try:
             mask_total = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
             if mask_total is not None and mask_total.ndim == 2 and mask_total.shape == (h, w):
                 kernel = np.ones((3, 3), np.uint8)
                 mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
                 mask_total = remove_small_components(mask_total, min_area_ratio=min_area_ratio)
-                logger.debug(f"[SAM3] Batch processing succeeded for {len(boxes)} boxes")
+                logger.info(f"[SAM3] Batch processing succeeded for {len(boxes)} boxes")
                 return mask_total
             else:
-                logger.debug(f"[SAM3] Batch processing returned invalid mask, falling back to loop")
+                logger.warning(f"[SAM3] Batch processing returned invalid mask (shape: {mask_total.shape if mask_total is not None else None}), falling back to loop")
         except Exception as e:
-            logger.debug(f"[SAM3] Batch processing failed: {e}, falling back to loop")
+            logger.warning(f"[SAM3] Batch processing failed: {e}, falling back to loop", exc_info=True)
+    elif len(boxes) > 1:
+        logger.warning(f"[SAM3] Batch processing not available (hasattr: {hasattr(sam3_model, 'generate_mask_from_bboxes')}), using loop for {len(boxes)} boxes")
     
     mask_total = None
     for box in boxes:
