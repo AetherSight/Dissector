@@ -2,7 +2,7 @@ import os
 import base64
 import logging
 import platform
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any, Optional
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -15,7 +15,7 @@ import torch
 from PIL import Image
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
-from ultralytics import SAM
+from .sam3_backend import SAM3Factory, SAM3Base
 
 
 def get_device() -> torch.device:
@@ -123,55 +123,37 @@ LEG_PROMPTS: List[str] = [
     "thighs",
 ]
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-def find_sam3_checkpoint() -> str:
-    import glob
-    model_path = os.getenv("SAM3_MODEL_PATH")
-    if model_path:
-        if os.path.exists(model_path):
-            return model_path
-        model_dir = os.path.dirname(model_path) if os.path.dirname(model_path) else "."
-        model_base = os.path.basename(model_path) if os.path.basename(model_path) else "sam3.pt"
-    else:
-        model_dir = "/models" if os.path.exists("/models") else os.path.join(PROJECT_ROOT, "models")
-        model_base = "sam3.pt"
+def load_models(
+    dino_model_name: str,
+    device: torch.device,
+    sam3_backend: Optional[str] = None,
+) -> Tuple[AutoProcessor, AutoModelForZeroShotObjectDetection, SAM3Base]:
+    """
+    Load models for image processing.
     
-    full_path = os.path.join(model_dir, model_base)
-    if os.path.exists(full_path):
-        return full_path
+    Args:
+        dino_model_name: Grounding DINO model name
+        device: PyTorch device
+        sam3_backend: SAM3 backend type ("mlx" or "ultralytics"), None for auto-detect
     
-    patterns = [
-        os.path.join(model_dir, "sam3-*-of-*.pt"),
-    ]
-    
-    for pattern in patterns:
-        shards = sorted(glob.glob(pattern))
-        if len(shards) >= 2:
-            logger.info(f"Found {len(shards)} sharded checkpoint files, merging...")
-            merged_path = os.path.join(model_dir, "sam3.pt")
-            if not os.path.exists(merged_path):
-                checkpoint = {}
-                for shard in shards:
-                    logger.info(f"Loading shard: {shard}")
-                    shard_data = torch.load(shard, map_location="cpu")
-                    if isinstance(shard_data, dict):
-                        checkpoint.update(shard_data)
-                    else:
-                        checkpoint.update(shard_data.state_dict() if hasattr(shard_data, 'state_dict') else {})
-                logger.info(f"Saving merged checkpoint to: {merged_path}")
-                torch.save(checkpoint, merged_path)
-            return merged_path
-    
-    return full_path
-
-SAM3_CHECKPOINT_PATH = find_sam3_checkpoint()
-
-def load_models(dino_model_name: str, device: torch.device) -> Tuple[AutoProcessor, AutoModelForZeroShotObjectDetection, SAM]:
+    Returns:
+        Tuple of (processor, dino_model, sam3_model)
+    """
     processor = AutoProcessor.from_pretrained(dino_model_name)
     dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(dino_model_name).to(device)
-
-    sam3_model = SAM(SAM3_CHECKPOINT_PATH)
+    
+    # 自动检测设备类型用于 Ultralytics
+    device_str = None
+    if device.type == "cuda":
+        device_str = "cuda"
+    elif device.type == "mps":
+        device_str = "mps"
+    else:
+        device_str = "cpu"
+    
+    sam3_model = SAM3Factory.create(backend=sam3_backend, device=device_str)
+    logger.info(f"Loaded SAM3 model with backend: {sam3_model.backend_name}")
+    
     return processor, dino_model, sam3_model
 
 
@@ -239,9 +221,21 @@ def remove_small_components(mask: np.ndarray, min_area_ratio: float = 0.001) -> 
 def mask_from_boxes(
     image_pil: Image.Image,
     boxes: np.ndarray,
-    sam3_model: SAM,
+    sam3_model: SAM3Base,
     min_area_ratio: float = 0.001,
 ) -> np.ndarray:
+    """
+    从边界框列表生成 mask
+    
+    Args:
+        image_pil: PIL Image
+        boxes: numpy array of shape (N, 4) with [x1, y1, x2, y2]
+        sam3_model: SAM3Base 实例
+        min_area_ratio: 最小区域比例，用于过滤小组件
+    
+    Returns:
+        Binary mask as numpy array
+    """
     if boxes.size == 0:
         h, w = image_pil.size[1], image_pil.size[0]
         return np.zeros((h, w), dtype=bool)
@@ -253,38 +247,13 @@ def mask_from_boxes(
         x1, y1, x2, y2 = box
         bbox = np.array([[x1, y1, x2, y2]])
         
-        imgsz = max(h, w)
-        imgsz = ((imgsz + 13) // 14) * 14
-        results = sam3_model(image_pil, bboxes=bbox, imgsz=imgsz, verbose=False)
-        
-        if results and len(results) > 0:
-            result = results[0]
-            if hasattr(result, 'masks') and result.masks is not None:
-                masks = result.masks.data.cpu().numpy()
-                
-                if masks.ndim == 3:
-                    mask = np.any(masks, axis=0).astype(bool)
-                elif masks.ndim == 2:
-                    mask = masks.astype(bool)
-                else:
-                    mask = masks.squeeze()
-                    if mask.ndim == 3:
-                        mask = np.any(mask, axis=0).astype(bool)
-                    elif mask.ndim == 2:
-                        mask = mask.astype(bool)
-                    else:
-                        continue
+        # 使用统一接口生成 mask
+        mask = sam3_model.generate_mask_from_bbox(image_pil, bbox)
 
-                if mask.ndim != 2:
-                    continue
-
-                if mask.shape != (h, w):
-                    mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-
-                if mask_total is None:
-                    mask_total = mask.copy()
-                else:
-                    mask_total |= mask
+        if mask_total is None:
+            mask_total = mask.copy()
+        else:
+            mask_total |= mask
 
     if mask_total is None:
         return np.zeros((h, w), dtype=bool)
@@ -329,7 +298,7 @@ def remove_background(
     image_path: str,
     processor: AutoProcessor,
     dino_model: AutoModelForZeroShotObjectDetection,
-    sam3_model: SAM,
+    sam3_model: SAM3Base,
     device: torch.device,
 ) -> str:
     image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
@@ -365,38 +334,13 @@ def remove_background(
             x1, y1, x2, y2 = box
             bbox = np.array([[x1, y1, x2, y2]])
             
-            imgsz = max(h, w)
-            imgsz = ((imgsz + 13) // 14) * 14
-            results = sam3_model(image_pil, bboxes=bbox, imgsz=imgsz, verbose=False)
+            # 使用统一接口生成 mask
+            mask = sam3_model.generate_mask_from_bbox(image_pil, bbox)
             
-            if results and len(results) > 0:
-                result = results[0]
-                if hasattr(result, 'masks') and result.masks is not None:
-                    masks = result.masks.data.cpu().numpy()
-                    
-                    if masks.ndim == 3:
-                        mask = np.any(masks, axis=0).astype(bool)
-                    elif masks.ndim == 2:
-                        mask = masks.astype(bool)
-                    else:
-                        mask = masks.squeeze()
-                        if mask.ndim == 3:
-                            mask = np.any(mask, axis=0).astype(bool)
-                        elif mask.ndim == 2:
-                            mask = mask.astype(bool)
-                        else:
-                            continue
-                    
-                    if mask.ndim != 2:
-                        continue
-                    
-                    if mask.shape != (h, w):
-                        mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-                    
-                    if mask_total is None:
-                        mask_total = mask.copy()
-                    else:
-                        mask_total |= mask
+            if mask_total is None:
+                mask_total = mask.copy()
+            else:
+                mask_total |= mask
         
         if mask_total is None or np.sum(mask_total) == 0:
             person_mask = np.ones((h, w), dtype=bool)
@@ -442,7 +386,7 @@ def process_image(
     image_path: str,
     processor: AutoProcessor,
     dino_model: AutoModelForZeroShotObjectDetection,
-    sam3_model: SAM,
+    sam3_model: SAM3Base,
     device: torch.device,
     box_threshold: float,
     text_threshold: float,

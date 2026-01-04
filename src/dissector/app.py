@@ -52,7 +52,7 @@ async def load_models_on_startup():
             dino_model_name="IDEA-Research/grounding-dino-base",
             device=device
         )
-        logger.info("Models loaded successfully")
+        logger.info(f"Models loaded successfully (SAM3 backend: {sam3_model.backend_name})")
     except Exception as e:
         logger.error(f"Failed to load models: {e}")
         raise
@@ -64,6 +64,7 @@ async def health_check():
     return {
         "status": "healthy",
         "device": str(device) if device else "unknown",
+        "sam3_backend": sam3_model.backend_name if sam3_model else "unknown",
         "models_loaded": all([processor, dino_model, sam3_model])
     }
 
