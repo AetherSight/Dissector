@@ -6,20 +6,17 @@ import uvicorn
 
 
 def main():
-    """主函数"""
     print("Starting Dissector service...")
     print("Models will be loaded on startup...")
     
     port = int(os.getenv('PORT', 8000))
-    reload = os.getenv('RELOAD', 'true').lower() == 'true'
+    debug = os.getenv('DEBUG', 'true').lower() == 'true'
     
-    if reload:
-        # 使用导入字符串以启用自动重载
-        uvicorn.run("dissector.app:app", host='0.0.0.0', port=port, log_level='info', reload=reload)
+    if debug:
+        uvicorn.run("dissector.app:app", host='0.0.0.0', port=port, log_level='info', reload=True)
     else:
-        # 不使用reload时可以直接导入app对象
         from .app import app
-        uvicorn.run(app, host='0.0.0.0', port=port, log_level='info', reload=reload)
+        uvicorn.run(app, host='0.0.0.0', port=port, log_level='info', reload=False)
 
 
 if __name__ == '__main__':
