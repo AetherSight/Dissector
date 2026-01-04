@@ -321,7 +321,17 @@ class MLXSAM3(SAM3Base):
             mask_array = np.array(masks) if hasattr(masks, '__array__') else np.array(masks)
         
         if mask_array.ndim == 3:
-            mask = np.any(mask_array, axis=0).astype(bool)
+            scores = None
+            if isinstance(state_after_box, dict):
+                scores_raw = state_after_box.get("scores", None)
+                if scores_raw is not None:
+                    scores = np.array(scores_raw) if hasattr(scores_raw, '__array__') else np.array(scores_raw)
+            
+            if scores is not None and len(scores) == mask_array.shape[0]:
+                best_idx = np.argmax(scores)
+                mask = mask_array[best_idx]
+            else:
+                mask = np.any(mask_array, axis=0).astype(bool)
         elif mask_array.ndim == 2:
             mask = mask_array.astype(bool)
         else:
