@@ -125,13 +125,27 @@ class UltralyticsSAM3(SAM3Base):
                 masks = result.masks.data.cpu().numpy()
                 
                 if masks.ndim == 3:
-                    mask = np.any(masks, axis=0).astype(bool)
+                    if masks.shape[0] > 1:
+                        if hasattr(result, 'scores') and result.scores is not None:
+                            scores = result.scores.cpu().numpy()
+                            if len(scores) == masks.shape[0]:
+                                best_idx = np.argmax(scores)
+                                mask = masks[best_idx].astype(bool)
+                            else:
+                                mask = masks[0].astype(bool)
+                        else:
+                            mask = masks[0].astype(bool)
+                    else:
+                        mask = masks[0].astype(bool)
                 elif masks.ndim == 2:
                     mask = masks.astype(bool)
                 else:
                     mask = masks.squeeze()
                     if mask.ndim == 3:
-                        mask = np.any(mask, axis=0).astype(bool)
+                        if mask.shape[0] > 1:
+                            mask = mask[0].astype(bool)
+                        else:
+                            mask = mask[0].astype(bool) if mask.shape[0] == 1 else np.any(mask, axis=0).astype(bool)
                     elif mask.ndim == 2:
                         mask = mask.astype(bool)
                     else:
