@@ -12,7 +12,7 @@ import torch
 from PIL import Image
 import io
 
-from .pipeline import load_models, process_image, get_device
+from .pipeline import load_models, process_image, get_device, remove_background
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -125,6 +125,56 @@ async def segment_image(
     except Exception as e:
         logger.error(f"Error processing image: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+
+
+@app.post("/remove-background")
+async def remove_background_endpoint(
+    file: UploadFile = File(...),
+):
+    """
+    Remove background from image, keeping only the person/character.
+    
+    Returns base64-encoded PNG image with transparent background.
+    """
+    if not all([processor, dino_model, sam3_processor]):
+        raise HTTPException(status_code=503, detail="Models not loaded")
+    
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image")
+    
+    try:
+        image_data = await file.read()
+        image_pil = Image.open(io.BytesIO(image_data))
+        
+        if image_pil.mode != "RGB":
+            image_pil = image_pil.convert("RGB")
+        
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
+            image_pil.save(tmp_file.name, "JPEG")
+            tmp_path = tmp_file.name
+        
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                executor,
+                remove_background,
+                tmp_path,
+                processor,
+                dino_model,
+                sam3_processor,
+                device,
+            )
+            
+            return JSONResponse(content={"image": result})
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+    
+    except Exception as e:
+        logger.error(f"Error removing background: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Background removal failed: {str(e)}")
 
 
 if __name__ == "__main__":

@@ -348,6 +348,61 @@ def encode_bgr_to_base64(img_bgr: np.ndarray, ext: str = ".jpg") -> str:
     return base64.b64encode(buf.tobytes()).decode("utf-8")
 
 
+def remove_background(
+    image_path: str,
+    processor: AutoProcessor,
+    dino_model: AutoModelForZeroShotObjectDetection,
+    sam3_processor: Sam3Processor,
+    device: torch.device,
+) -> str:
+    image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    if image_bgr is None:
+        raise ValueError(f"Cannot read image: {image_path}")
+    
+    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    image_pil = Image.fromarray(image_rgb)
+    h, w = image_rgb.shape[:2]
+    
+    person_prompts = [
+        "person",
+        "human",
+        "human body",
+        "character",
+        "figure",
+    ]
+    
+    dino_res = run_grounding_dino(
+        image_pil=image_pil,
+        prompts=person_prompts,
+        processor=processor,
+        dino_model=dino_model,
+        device=device,
+        box_threshold=0.3,
+        text_threshold=0.25,
+    )
+    boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
+    
+    if boxes.size == 0:
+        mask = np.ones((h, w), dtype=bool)
+    else:
+        mask = mask_from_boxes(image_pil, boxes, sam3_processor, min_area_ratio=0.001)
+        if np.sum(mask) == 0:
+            mask = np.ones((h, w), dtype=bool)
+    
+    image_rgba = image_rgb.copy()
+    alpha_channel = (mask.astype(np.uint8) * 255)
+    image_rgba = np.dstack([image_rgba, alpha_channel])
+    
+    image_pil_rgba = Image.fromarray(image_rgba, "RGBA")
+    
+    import io
+    buffer = io.BytesIO()
+    image_pil_rgba.save(buffer, format="PNG")
+    buffer.seek(0)
+    
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
 def save_with_white_bg(image_bgr: np.ndarray, mask: np.ndarray, output_path: str):
     out = render_white_bg(image_bgr, mask)
     if out is None or out.size == 0:
