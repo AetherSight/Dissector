@@ -240,7 +240,7 @@ def mask_from_boxes(
     min_area_ratio: float = 0.001,
 ) -> np.ndarray:
     """
-    从边界框列表生成 mask
+    从边界框列表生成 mask（优化版：支持批量处理）
     
     Args:
         image_pil: PIL Image
@@ -256,8 +256,19 @@ def mask_from_boxes(
         return np.zeros((h, w), dtype=bool)
 
     h, w = image_pil.size[1], image_pil.size[0]
+    
+    if hasattr(sam3_model, 'generate_mask_from_bboxes') and len(boxes) > 1:
+        try:
+            mask_total = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
+            if mask_total is not None and mask_total.ndim == 2 and mask_total.shape == (h, w):
+                kernel = np.ones((3, 3), np.uint8)
+                mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
+                mask_total = remove_small_components(mask_total, min_area_ratio=min_area_ratio)
+                return mask_total
+        except Exception:
+            pass
+    
     mask_total = None
-
     for box in boxes:
         x1, y1, x2, y2 = box
         bbox = np.array([[x1, y1, x2, y2]])

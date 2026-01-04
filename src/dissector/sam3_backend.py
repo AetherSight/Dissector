@@ -35,6 +35,23 @@ class SAM3Base(ABC):
         """
         pass
     
+    def generate_mask_from_bboxes(
+        self,
+        image_pil: Image.Image,
+        bboxes: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        """
+        批量从边界框生成 mask（可选实现，默认回退到循环调用）
+        
+        Args:
+            image_pil: PIL Image 对象
+            bboxes: numpy array of shape (N, 4) with [x1, y1, x2, y2] 像素坐标
+        
+        Returns:
+            Binary mask as numpy array of shape (H, W), dtype=bool, or None if failed
+        """
+        return None
+    
     @property
     @abstractmethod
     def backend_name(self) -> str:
