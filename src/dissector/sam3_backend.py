@@ -5,6 +5,7 @@ SAM3 多后端统一推理接口
 import os
 import platform
 import logging
+import threading
 from abc import ABC, abstractmethod
 from typing import Union, Optional
 import numpy as np
@@ -79,6 +80,7 @@ class UltralyticsSAM3(SAM3Base):
         self.model = SAM(model_path)
         self.device = device
         self._model_path = model_path
+        self._lock = threading.Lock()
     
     def _find_sam3_checkpoint(self) -> str:
         """查找 SAM3 模型文件"""
@@ -134,7 +136,8 @@ class UltralyticsSAM3(SAM3Base):
         imgsz = max(h, w)
         imgsz = ((imgsz + 13) // 14) * 14
         
-        results = self.model(image_pil, bboxes=bbox, imgsz=imgsz, verbose=False)
+        with self._lock:
+            results = self.model(image_pil, bboxes=bbox, imgsz=imgsz, verbose=False)
         
         if results and len(results) > 0:
             result = results[0]
@@ -196,7 +199,8 @@ class UltralyticsSAM3(SAM3Base):
         imgsz = max(h, w)
         imgsz = ((imgsz + 13) // 14) * 14
         
-        results = self.model(image_pil, bboxes=bboxes, imgsz=imgsz, verbose=False)
+        with self._lock:
+            results = self.model(image_pil, bboxes=bboxes, imgsz=imgsz, verbose=False)
         
         if results and len(results) > 0:
             result = results[0]
