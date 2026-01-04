@@ -13,7 +13,7 @@ requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-packages = [{include = "dissector", from = "src"}]
+packages = [{include = "dissector", from = "../../src"}]
 
 [tool.poetry.dependencies]
 # Common dependencies
@@ -24,7 +24,7 @@ psutil = ">=7.2.1,<8.0.0"
 fastapi = ">=0.115.0,<1.0.0"
 "uvicorn[standard]" = ">=0.32.0,<1.0.0"
 python-multipart = ">=0.0.12,<1.0.0"
-torch = ">=2.0.0"
+torch = ">=2.9.0"
 torchvision = ">=0.24.1"
 
 # macOS: MLX backend

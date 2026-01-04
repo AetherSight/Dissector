@@ -18,7 +18,7 @@ url = "https://download.pytorch.org/whl/cu126"
 priority = "explicit"
 
 [tool.poetry]
-packages = [{include = "dissector", from = "src"}]
+packages = [{include = "dissector", from = "../../src"}]
 
 [tool.poetry.dependencies]
 # Common dependencies
@@ -29,8 +29,8 @@ psutil = ">=7.2.1,<8.0.0"
 fastapi = ">=0.115.0,<1.0.0"
 uvicorn = ">=0.32.0,<1.0.0"
 python-multipart = ">=0.0.12,<1.0.0"
-torch = "==2.7.0"
-torchvision = "==0.22.0"
+torch = {version = "==2.7.0", source = "pytorch-cu126"}
+torchvision = {version = "==0.22.0", source = "pytorch-cu126"}
 
 # Windows/Linux: Ultralytics backend
 ultralytics = ">=8.3.247,<9.0.0"
