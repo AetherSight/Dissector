@@ -402,40 +402,6 @@ class MLXSAM3(SAM3Base):
         logger.error("All MLX inference methods failed, returning None")
         return None
 
-        if masks is None:
-            return None
-
-        # 转换为 numpy 并选择最佳 mask
-        masks_np = np.array(masks)
-
-        if masks_np.ndim == 4:  # (1, 1, 3, H, W) 或类似
-            masks_np = masks_np[0, 0]  # 取第一个 batch，第一个 bbox
-        elif masks_np.ndim == 3:  # (3, H, W) 或 (1, 3, H, W)
-            if masks_np.shape[0] == 1:
-                masks_np = masks_np[0]
-            elif masks_np.shape[0] == 3:
-                pass  # 已经是 (3, H, W)
-            else:
-                masks_np = masks_np[0]  # 默认取第一个
-
-        if scores is not None:
-            scores_np = np.array(scores)
-            if scores_np.ndim == 2:
-                scores_np = scores_np[0, 0]  # 取第一个 batch，第一个 bbox
-            elif scores_np.ndim == 1:
-                pass  # 已经是 (3,)
-            best_idx = np.argmax(scores_np)
-        else:
-            best_idx = 0
-
-        # 选择最佳 mask
-        mask = masks_np[best_idx] > 0
-
-        # 调整尺寸
-        mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-
-        return {"masks": mask, "scores": scores_np if scores is not None else None}
-
     def _direct_batch_inference(self, image_pil, bboxes):
         """直接使用 MLX 模型 API 的批量回退方法"""
         import mlx.core as mx
