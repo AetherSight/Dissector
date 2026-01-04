@@ -562,17 +562,6 @@ def process_image(
             detect_and_store("upper_raw", UPPER_PROMPTS)
     else:
         detect_and_store("upper_raw", UPPER_PROMPTS)
-    step_start = time.time()
-    if use_batch:
-        shoes_boxes = filter_boxes_by_prompts(all_boxes, all_labels, FOOTWEAR_PROMPTS)
-        if len(shoes_boxes) > 0:
-            masks["shoes"] = mask_from_boxes(image_pil, shoes_boxes, sam3_model)
-            logger.info(f"[PERF] shoes: SAM3={time.time()-step_start:.2f}s, boxes={len(shoes_boxes)}")
-        else:
-            detect_and_store("shoes", FOOTWEAR_PROMPTS)
-    else:
-        detect_and_store("shoes", FOOTWEAR_PROMPTS)
-
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_mask_current = masks.get("lower", np.zeros_like(upper_mask))
     
