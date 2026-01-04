@@ -236,267 +236,96 @@ class UltralyticsSAM3(SAM3Base):
 
 
 class MLXSAM3(SAM3Base):
-    """MLX SAM3 实现，针对 Apple Silicon 优化"""
-    
     _gpu_lock = threading.Lock()
-    
-    def __init__(self, model_path: Optional[str] = None):
-        """
-        初始化 MLX SAM3
-        
-        Args:
-            model_path: 模型路径，MLX 版本通常自动下载，可以为 None
-        """
-        try:
-            # 尝试导入 MLX SAM3
-            try:
-                from sam3 import build_sam3_image_model
-                from sam3.model.sam3_image_processor import Sam3Processor
-            except ImportError:
-                try:
-                    from mlx_sam3 import build_sam3_image_model
-                    from mlx_sam3.model.sam3_image_processor import Sam3Processor
-                except ImportError:
-                    raise ImportError(
-                        "MLX SAM3 not found. Install with: "
-                        "pip install mlx-sam3 or from GitHub: "
-                        "git clone https://github.com/Deekshith-Dade/mlx_sam3.git && cd mlx_sam3 && pip install -e ."
-                    )
-            
-            logger.info("Loading MLX SAM3 model...")
-            self.model = build_sam3_image_model()
-            self.processor = Sam3Processor(self.model, confidence_threshold=0.0)
-            
-            # 状态管理
-            self._current_state = None
-            self._current_image_id = None
-            
-        except ImportError as e:
-            logger.error(f"Failed to import MLX SAM3: {e}")
-            raise RuntimeError("MLX SAM3 is required on macOS") from e
-    
-    def generate_mask_from_bbox(
-        self,
-        image_pil: Image.Image,
-        bbox: np.ndarray,
-    ) -> Optional[np.ndarray]:
-        """从边界框生成 mask（MLX 实现，与 Ultralytics 逻辑一致）"""
+
+    def __init__(self):
+        from sam3 import build_sam3_image_model
+        from sam3.model.sam3_image_processor import Sam3Processor
+
+        self.model = build_sam3_image_model()
+        self.processor = Sam3Processor(self.model)
+
+    # --------------------------------------------------
+    # box → point prompt（工程等价）
+    # --------------------------------------------------
+    @staticmethod
+    def _box_to_points(x1, y1, x2, y2, w, h):
+        eps = 2
+        neg = 4
+
+        points = [
+            [x1 + eps, y1 + eps],
+            [x2 - eps, y1 + eps],
+            [x1 + eps, y2 - eps],
+            [x2 - eps, y2 - eps],
+            [max(0, x1 - neg), max(0, y1 - neg)],
+            [min(w - 1, x2 + neg), min(h - 1, y2 + neg)],
+        ]
+        labels = [1, 1, 1, 1, 0, 0]
+        return points, labels
+
+    # --------------------------------------------------
+    # 单 bbox
+    # --------------------------------------------------
+    def generate_mask_from_bbox(self, image_pil, bbox):
         h, w = image_pil.size[1], image_pil.size[0]
-        
-        with MLXSAM3._gpu_lock:
-            state = self.processor.set_image(image_pil)
-            try:
-                import mlx.core as mx
-                mx.eval(state) if isinstance(state, dict) else mx.eval()
-            except (ImportError, AttributeError):
-                pass
-        
         x1, y1, x2, y2 = bbox[0]
-        x1_norm, y1_norm = float(x1 / w), float(y1 / h)
-        x2_norm, y2_norm = float(x2 / w), float(y2 / h)
-        
-        center_x = float((x1_norm + x2_norm) / 2.0)
-        center_y = float((y1_norm + y2_norm) / 2.0)
-        box_width = float(x2_norm - x1_norm)
-        box_height = float(y2_norm - y1_norm)
-        
-        box_list = [center_x, center_y, box_width, box_height]
-        
-        with MLXSAM3._gpu_lock:
-            state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
-            try:
-                import mlx.core as mx
-                mx.eval(state_after_box) if isinstance(state_after_box, dict) else mx.eval()
-            except (ImportError, AttributeError):
-                pass
-        
-        if state_after_box is None:
-            return None
-        
-        masks = None
-        if isinstance(state_after_box, dict):
-            masks_raw = state_after_box.get("masks", None)
-            if masks_raw is not None:
-                try:
-                    if hasattr(masks_raw, '__array__'):
-                        masks = np.array(masks_raw)
-                    elif isinstance(masks_raw, (list, tuple)):
-                        masks = np.array([np.array(m) if hasattr(m, '__array__') else m for m in masks_raw])
-                    else:
-                        masks = np.array(masks_raw)
-                except Exception:
-                    return None
-        
-        if masks is None or (hasattr(masks, '__len__') and len(masks) == 0):
-            return None
-        
-        if isinstance(masks, (list, tuple)):
-            mask_array = np.array([np.array(m) if hasattr(m, '__array__') else m for m in masks])
-        else:
-            mask_array = np.array(masks) if hasattr(masks, '__array__') else np.array(masks)
-        
-        if mask_array.ndim == 3:
-            if mask_array.shape[0] > 0:
-                if mask_array.shape[0] > 1:
-                    scores = None
-                    if isinstance(state_after_box, dict):
-                        scores_raw = state_after_box.get("scores", None)
-                        if scores_raw is not None:
-                            scores = np.array(scores_raw) if hasattr(scores_raw, '__array__') else np.array(scores_raw)
-                    
-                    if scores is not None and len(scores) == mask_array.shape[0]:
-                        best_idx = np.argmax(scores)
-                        mask = mask_array[best_idx].astype(bool)
-                    else:
-                        mask = mask_array[0].astype(bool)
-                else:
-                    mask = mask_array[0].astype(bool)
-            else:
-                return None
-        elif mask_array.ndim == 2:
-            mask = mask_array.astype(bool)
-        else:
-            mask = mask_array.squeeze()
-            if mask.ndim == 3:
-                if mask.shape[0] > 1:
-                    mask = mask[0].astype(bool)
-                else:
-                    mask = mask[0].astype(bool) if mask.shape[0] == 1 else np.any(mask, axis=0).astype(bool)
-            elif mask.ndim == 2:
-                mask = mask.astype(bool)
-            else:
-                return None
-        
-        if mask.ndim != 2:
-            return None
-        
-        if mask.shape != (h, w):
-            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-        
-        return mask
-    
-    def generate_mask_from_bboxes(
-        self,
-        image_pil: Image.Image,
-        bboxes: np.ndarray,
-    ) -> Optional[np.ndarray]:
-        """批量从边界框生成 mask（MLX 实现）"""
-        if bboxes.size == 0:
-            h, w = image_pil.size[1], image_pil.size[0]
-            return np.zeros((h, w), dtype=bool)
-        
-        h, w = image_pil.size[1], image_pil.size[0]
-        
-        with MLXSAM3._gpu_lock:
+
+        with self._gpu_lock:
             state = self.processor.set_image(image_pil)
-            try:
-                import mlx.core as mx
-                mx.eval(state) if isinstance(state, dict) else mx.eval()
-            except (ImportError, AttributeError):
-                pass
-        
-        mask_total = None
-        
-        for bbox in bboxes:
-            x1, y1, x2, y2 = bbox
-            x1_norm, y1_norm = float(x1 / w), float(y1 / h)
-            x2_norm, y2_norm = float(x2 / w), float(y2 / h)
-            
-            center_x = float((x1_norm + x2_norm) / 2.0)
-            center_y = float((y1_norm + y2_norm) / 2.0)
-            box_width = float(x2_norm - x1_norm)
-            box_height = float(y2_norm - y1_norm)
-            
-            box_list = [center_x, center_y, box_width, box_height]
-            
-            try:
-                with MLXSAM3._gpu_lock:
-                    state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
-                    try:
-                        import mlx.core as mx
-                        mx.eval(state_after_box) if isinstance(state_after_box, dict) else mx.eval()
-                    except (ImportError, AttributeError):
-                        pass
-            except Exception:
-                continue
-            
-            if state_after_box is None:
-                continue
-            
-            masks = None
-            if isinstance(state_after_box, dict):
-                masks_raw = state_after_box.get("masks", None)
-                if masks_raw is not None:
-                    try:
-                        if hasattr(masks_raw, '__array__'):
-                            masks = np.array(masks_raw)
-                        elif isinstance(masks_raw, (list, tuple)):
-                            masks = np.array([np.array(m) if hasattr(m, '__array__') else m for m in masks_raw])
-                        else:
-                            masks = np.array(masks_raw)
-                    except Exception:
-                        continue
-            
-            if masks is None or len(masks) == 0:
-                continue
-            
-            if isinstance(masks, (list, tuple)):
-                mask_array = np.array([np.array(m) if hasattr(m, '__array__') else m for m in masks])
-            else:
-                mask_array = np.array(masks) if hasattr(masks, '__array__') else np.array(masks)
-            
-            if mask_array.ndim == 3:
-                if mask_array.shape[0] > 0:
-                    if mask_array.shape[0] > 1:
-                        scores = None
-                        if isinstance(state_after_box, dict):
-                            scores_raw = state_after_box.get("scores", None)
-                            if scores_raw is not None:
-                                scores = np.array(scores_raw) if hasattr(scores_raw, '__array__') else np.array(scores_raw)
-                        if scores is not None and len(scores) == mask_array.shape[0]:
-                            best_idx = np.argmax(scores)
-                            mask = mask_array[best_idx].astype(bool)
-                        else:
-                            mask = mask_array[0].astype(bool)
-                    else:
-                        mask = mask_array[0].astype(bool)
-                else:
-                    continue
-            elif mask_array.ndim == 2:
-                mask = mask_array.astype(bool)
-            else:
-                mask = mask_array.squeeze()
-                if mask.ndim == 3:
-                    if mask.shape[0] > 0:
-                        if mask.shape[0] > 1:
-                            mask = mask[0].astype(bool)
-                        else:
-                            mask = mask[0].astype(bool)
-                    else:
-                        continue
-                elif mask.ndim == 2:
-                    mask = mask.astype(bool)
-                else:
-                    continue
-            
-            if mask.ndim != 2:
-                continue
-            
-            if mask.shape != (h, w):
-                mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-            
-            if mask_total is None:
-                mask_total = mask.copy()
-            else:
-                mask_total |= mask
-        
-        if mask_total is None:
+
+        points, labels = self._box_to_points(x1, y1, x2, y2, w, h)
+
+        with self._gpu_lock:
+            state = self.processor.add_point_prompt(
+                points=points,
+                labels=labels,
+                state=state,
+            )
+
+        if not isinstance(state, dict):
+            return None
+
+        masks = state.get("masks", None)
+        if masks is None:
+            return None
+
+        masks = np.asarray(masks)
+        if masks.ndim == 2:
+            mask = masks
+        elif masks.ndim == 3 and masks.shape[0] > 0:
+            # 唯一可靠策略：最大面积
+            areas = masks.reshape(masks.shape[0], -1).sum(axis=1)
+            mask = masks[np.argmax(areas)]
+        else:
+            return None
+
+        if mask.shape != (h, w):
+            mask = cv2.resize(
+                mask.astype(np.uint8),
+                (w, h),
+                interpolation=cv2.INTER_NEAREST,
+            )
+
+        return mask.astype(bool)
+
+    # --------------------------------------------------
+    # 多 bbox
+    # --------------------------------------------------
+    def generate_mask_from_bboxes(self, image_pil, bboxes):
+        h, w = image_pil.size[1], image_pil.size[0]
+        if bboxes.size == 0:
             return np.zeros((h, w), dtype=bool)
-        
-        return mask_total.astype(bool)
-    
+
+        out = np.zeros((h, w), dtype=bool)
+        for b in bboxes:
+            m = self.generate_mask_from_bbox(image_pil, b.reshape(1, 4))
+            if m is not None:
+                out |= m
+        return out
+
     @property
-    def backend_name(self) -> str:
+    def backend_name(self):
         return "mlx"
 
 
