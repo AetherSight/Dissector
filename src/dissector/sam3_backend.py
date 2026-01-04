@@ -236,156 +236,166 @@ class UltralyticsSAM3(SAM3Base):
 
 
 class MLXSAM3(SAM3Base):
-    """
-    Native MLX implementation using mlx-community/sam3-image (likely SAM2 architecture).
-    Includes manual pipeline for Preprocessing -> Encoder -> Decoder.
-    """
-    _gpu_lock = threading.Lock() # Global lock for MLX GPU access safety if needed
+    """MLX SAM3 实现，与 UltralyticsSAM3 行为完全一致"""
 
-    def __init__(self, model_path: str = "mlx-community/sam2.1-hiera-large"):
-        self.model, self.processor = self._load_model(model_path)
-        logger.info("MLX SAM model loaded successfully.")
+    def __init__(self, model_path: Optional[str] = None, device: Optional[str] = None):
+        """
+        初始化 MLX SAM3
 
-    def _load_model(self, repo_id):
+        Args:
+            model_path: 模型路径（可选）
+            device: 设备类型（兼容接口，无实际作用）
+        """
         from sam3 import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
-        model = build_sam3_image_model()
-        processor = Sam3Processor(model)
-        return model, processor
 
-    def _preprocess(self, image_pil: Image.Image, target_size=1024):
-        """Resize and normalize image for SAM"""
+        logger.info("Loading MLX SAM3 model...")
+        self.model = build_sam3_image_model()
+        self.processor = Sam3Processor(self.model)
+        self._lock = threading.Lock()
+
+    def generate_mask_from_bbox(
+        self,
+        image_pil: Image.Image,
+        bbox: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        """从边界框生成 mask，与 UltralyticsSAM3 行为一致"""
+        h, w = image_pil.size[1], image_pil.size[0]
+
+        # 转换为点提示（与 Ultralytics 行为对齐）
+        x1, y1, x2, y2 = bbox[0]
+        points, labels = self._box_to_points(x1, y1, x2, y2, w, h)
+
+        with self._lock:
+            try:
+                result = self.processor(
+                    image=image_pil,
+                    points=points,
+                    labels=labels,
+                    multimask_output=True,
+                )
+            except Exception as e:
+                logger.warning(f"MLX processor failed: {e}, falling back to direct API")
+                # 回退到直接 API
+                result = self._direct_inference(image_pil, bbox)
+
+        if not isinstance(result, dict) or "masks" not in result:
+            return None
+
+        masks = np.asarray(result["masks"])
+        if masks.ndim == 2:
+            mask = masks
+        elif masks.ndim == 3 and masks.shape[0] > 0:
+            # 选择最佳 mask（与 Ultralytics 一致：优先使用 scores，否则第一个）
+            scores = result.get("scores", None)
+            if scores is not None and len(scores) == masks.shape[0]:
+                scores = np.asarray(scores)
+                best_idx = np.argmax(scores)
+                mask = masks[best_idx]
+            else:
+                mask = masks[0]
+        else:
+            return None
+
+        # 确保是布尔类型
+        mask = mask.astype(bool)
+
+        # 调整到原始尺寸
+        if mask.shape != (h, w):
+            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+
+        return mask
+
+    def generate_mask_from_bboxes(
+        self,
+        image_pil: Image.Image,
+        bboxes: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        """批量从边界框生成 mask，与 UltralyticsSAM3 行为一致"""
+        if bboxes.size == 0:
+            h, w = image_pil.size[1], image_pil.size[0]
+            return np.zeros((h, w), dtype=bool)
+
+        h, w = image_pil.size[1], image_pil.size[0]
+
+        # 收集所有 mask
+        all_masks = []
+        for bbox in bboxes:
+            mask = self.generate_mask_from_bbox(image_pil, bbox.reshape(1, 4))
+            if mask is not None:
+                all_masks.append(mask)
+
+        if not all_masks:
+            return np.zeros((h, w), dtype=bool)
+
+        # 合并所有 mask（与 Ultralytics 的 np.any 行为一致）
+        combined_mask = np.any(all_masks, axis=0).astype(bool)
+        return combined_mask
+
+    @staticmethod
+    def _box_to_points(x1, y1, x2, y2, w, h):
+        """将 bbox 转换为点提示（正点 + 负点）"""
+        eps = 2
+        neg = 4
+
+        points = [
+            [x1 + eps, y1 + eps],      # 左上角正点
+            [x2 - eps, y1 + eps],      # 右上角正点
+            [x1 + eps, y2 - eps],      # 左下角正点
+            [x2 - eps, y2 - eps],      # 右下角正点
+            [max(0, x1 - neg), max(0, y1 - neg)],        # 左上负点
+            [min(w - 1, x2 + neg), min(h - 1, y2 + neg)], # 右下负点
+        ]
+        labels = [1, 1, 1, 1, 0, 0]  # 正点在前，负点在后
+        return points, labels
+
+    def _direct_inference(self, image_pil, bbox):
+        """直接使用 MLX 模型 API 的回退方法"""
         import mlx.core as mx
-        
+
+        h, w = image_pil.size[1], image_pil.size[0]
+
+        # 预处理
         img = np.array(image_pil)
-        h, w = img.shape[:2]
-        scale = target_size / max(h, w)
+        scale = 1024 / max(h, w)
         new_h, new_w = int(h * scale), int(w * scale)
-        
         img = cv2.resize(img, (new_w, new_h))
-        # Normalize to [0, 1] and float32
         img = (img.astype(np.float32) / 255.0)
-        
-        # Mean/Std normalization usually done inside SAM2 models or skipped for simple float inputs
-        # Standard SAM2 expects: (1, 3, 1024, 1024) typically, but MLX vision handles HWC usually.
-        # Check specific model implementation. Assuming HWC -> 1HWC conversion happens in model or here.
-        
         img_mx = mx.array(img)
-        # Add batch dimension if needed (1, H, W, 3)
-        img_mx = mx.expand_dims(img_mx, 0) 
-        
-        return img_mx, scale, (h, w)
+        img_mx = mx.expand_dims(img_mx, 0)
 
-    def _run_inference(self, image_pil, bboxes):
-        """Core inference logic"""
-        import mlx.core as mx
-        
-        # 1. Preprocess
-        img_mx, scale, orig_shape = self._preprocess(image_pil)
-        
-        # 2. Scale BBoxes
-        # bboxes: (N, 4)
-        boxes_scaled = bboxes * scale
-        boxes_mx = mx.array(boxes_scaled)
-        
-        # 3. Encode Image (Heavy GPU op)
-        # Using specific SAM2 API structure
-        try:
-            # Common MLX SAM2 API pattern
+        # 缩放 bbox
+        bbox_scaled = bbox * scale
+        boxes_mx = mx.array(bbox_scaled)
+        boxes_mx = mx.expand_dims(boxes_mx, 0)
+
+        # 推理
+        with self._lock:
             source_encoded = self.model.image_encoder(img_mx)
-            
-            # 4. Prompt Encode & Mask Decode
-            # This handles the batch of boxes
-            # Note: SAM2 usually expects boxes in shape (B, N, 4) where B=1 image
-            boxes_mx = mx.expand_dims(boxes_mx, 0) # (1, N, 4)
-            
             sparse_emb, dense_emb = self.model.prompt_encoder(
-                points=None,
-                boxes=boxes_mx,
-                masks=None
+                points=None, boxes=boxes_mx, masks=None
             )
-            
             low_res_masks, iou_preds, _ = self.model.mask_decoder(
                 image_embeddings=source_encoded,
                 image_pe=self.model.prompt_encoder.get_dense_pe(),
                 sparse_prompt_embeddings=sparse_emb,
                 dense_prompt_embeddings=dense_emb,
-                multimask_output=True # We want the 3 output masks to select best
+                multimask_output=True,
             )
-            
-            # low_res_masks: (1, N, 3, 256, 256)
-            # iou_preds: (1, N, 3)
-            return low_res_masks, iou_preds, orig_shape
-            
-        except AttributeError as e:
-            logger.error(f"Model architecture mismatch: {e}")
-            raise
-
-    def generate_mask_from_bbox(self, image_pil: Image.Image, bbox: np.ndarray) -> Optional[np.ndarray]:
-        # bbox is (1, 4)
-        import mlx.core as mx
-        
-        with self._gpu_lock:
-            low_res_masks, iou_preds, orig_shape = self._run_inference(image_pil, bbox)
-            mx.eval(low_res_masks, iou_preds) # Force eval
-
-        # Convert to numpy
-        masks = np.array(low_res_masks[0, 0]) # (3, 256, 256)
-        scores = np.array(iou_preds[0, 0])    # (3,)
-        
-        # Select best mask based on IoU score
-        best_idx = np.argmax(scores)
-        best_mask_logits = masks[best_idx]
-        
-        # Upsample to original size
-        return self._postprocess_mask(best_mask_logits, orig_shape)
-
-    def generate_mask_from_bboxes(self, image_pil: Image.Image, bboxes: np.ndarray) -> Optional[np.ndarray]:
-        import mlx.core as mx
-        
-        if len(bboxes) == 0: return None
-        
-        with self._gpu_lock:
-            low_res_masks, iou_preds, orig_shape = self._run_inference(image_pil, bboxes)
             mx.eval(low_res_masks, iou_preds)
 
-        # low_res_masks: (1, N, 3, 256, 256)
-        # iou_preds: (1, N, 3)
-        
-        all_masks_np = np.array(low_res_masks[0]) # (N, 3, 256, 256)
-        all_scores_np = np.array(iou_preds[0])    # (N, 3)
-        
-        final_masks = []
-        for i in range(len(bboxes)):
-            scores = all_scores_np[i]
-            masks = all_masks_np[i]
-            best_idx = np.argmax(scores)
-            mask_logits = masks[best_idx]
-            final_masks.append(mask_logits > 0) # Binarize logits
-            
-        if not final_masks: return None
-        
-        # Stack and Union
-        batch_masks = np.stack(final_masks) # (N, 256, 256)
-        union_mask = np.any(batch_masks, axis=0) # (256, 256)
-        
-        # Upsample Union Mask
-        # We pass binary mask as float/uint8 to postprocess
-        return self._postprocess_mask(union_mask.astype(np.float32), orig_shape, is_logit=False)
+        # 转换为 numpy
+        masks = np.array(low_res_masks[0, 0])  # (3, 256, 256)
+        scores = np.array(iou_preds[0, 0])     # (3,)
 
-    def _postprocess_mask(self, mask_data, orig_shape, is_logit=True):
-        """Resize 256x256 SAM output back to original image size"""
-        h, w = orig_shape
-        
-        # SAM outputs 256x256
-        if is_logit:
-            mask_data = mask_data > 0
-            
-        mask_uint8 = mask_data.astype(np.uint8)
-        
-        # Resize nearest neighbor to keep sharp edges
-        full_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST)
-        return full_mask.astype(bool)
+        # 选择最佳 mask
+        best_idx = np.argmax(scores)
+        mask = masks[best_idx] > 0
+
+        # 调整尺寸
+        mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+
+        return {"masks": mask, "scores": scores}
 
     @property
     def backend_name(self) -> str:
