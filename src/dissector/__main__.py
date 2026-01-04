@@ -18,12 +18,13 @@ def main():
     if debug:
         uvicorn.run("dissector.app:app", host='0.0.0.0', port=port, log_level='info', reload=True)
     else:
-        if workers <= 0:
-            if platform.system() == "Darwin":
-                workers = 1
-            else:
-                cpu_count = multiprocessing.cpu_count()
-                workers = min(cpu_count, 4)
+        if platform.system() == "Darwin":
+            if workers > 1:
+                print(f"Warning: macOS detected. Forcing workers=1 (was {workers}) to avoid MLX/MPS concurrency issues.")
+            workers = 1
+        elif workers <= 0:
+            cpu_count = multiprocessing.cpu_count()
+            workers = min(cpu_count, 4)
         
         uvicorn.run(
             "dissector.app:app",
