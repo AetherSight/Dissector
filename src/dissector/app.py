@@ -3,6 +3,7 @@ HTTP API service for Dissector gear segmentation.
 """
 import os
 import logging
+import asyncio
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 import multiprocessing
@@ -19,15 +20,11 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Dissector", version="0.1.0")
 
-# Global model instances (loaded on startup)
 processor = None
 dino_model = None
 sam3_model = None
 device = None
 
-# Thread pool for CPU-intensive image processing
-# Use CPU count, but limit to reasonable number to avoid resource exhaustion
-# If GPU is available, can handle more concurrent requests
 _max_workers = int(os.getenv('MAX_WORKERS', 0))
 if _max_workers <= 0:
     cpu_count = multiprocessing.cpu_count()
@@ -35,14 +32,17 @@ if _max_workers <= 0:
         _max_workers = min(cpu_count, 8)
     else:
         _max_workers = min(cpu_count // 2, 4)
+
 executor = ThreadPoolExecutor(max_workers=_max_workers)
+mlx_lock = None
+
 logger.info(f"Thread pool initialized with {_max_workers} workers")
 
 
 @app.on_event("startup")
 async def load_models_on_startup():
     """Load models when the service starts."""
-    global processor, dino_model, sam3_model, device
+    global processor, dino_model, sam3_model, device, mlx_lock
     
     device = get_device()
     logger.info(f"Loading models on device: {device}")
@@ -53,9 +53,21 @@ async def load_models_on_startup():
             device=device
         )
         logger.info(f"Models loaded successfully (SAM3 backend: {sam3_model.backend_name})")
+        
+        if sam3_model and sam3_model.backend_name == "mlx":
+            mlx_lock = asyncio.Lock()
+            logger.info("MLX backend detected, using lock for thread safety")
     except Exception as e:
         logger.error(f"Failed to load models: {e}")
         raise
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up resources on shutdown."""
+    global executor
+    executor.shutdown(wait=True)
+    logger.info("Thread pool shutdown complete")
 
 
 @app.get("/health")
@@ -102,20 +114,33 @@ async def segment_image(
             tmp_path = tmp_file.name
         
         try:
-            # Process image in thread pool to avoid blocking event loop
-            import asyncio
             loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                executor,
-                process_image,
-                tmp_path,
-                processor,
-                dino_model,
-                sam3_model,
-                device,
-                box_threshold,
-                text_threshold,
-            )
+            
+            if mlx_lock:
+                async with mlx_lock:
+                    results = await loop.run_in_executor(
+                        executor,
+                        process_image,
+                        tmp_path,
+                        processor,
+                        dino_model,
+                        sam3_model,
+                        device,
+                        box_threshold,
+                        text_threshold,
+                    )
+            else:
+                results = await loop.run_in_executor(
+                    executor,
+                    process_image,
+                    tmp_path,
+                    processor,
+                    dino_model,
+                    sam3_model,
+                    device,
+                    box_threshold,
+                    text_threshold,
+                )
             
             return JSONResponse(content=results)
         finally:
@@ -156,17 +181,29 @@ async def remove_background_endpoint(
             tmp_path = tmp_file.name
         
         try:
-            import asyncio
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                executor,
-                remove_background,
-                tmp_path,
-                processor,
-                dino_model,
-                sam3_model,
-                device,
-            )
+            
+            if mlx_lock:
+                async with mlx_lock:
+                    result = await loop.run_in_executor(
+                        executor,
+                        remove_background,
+                        tmp_path,
+                        processor,
+                        dino_model,
+                        sam3_model,
+                        device,
+                    )
+            else:
+                result = await loop.run_in_executor(
+                    executor,
+                    remove_background,
+                    tmp_path,
+                    processor,
+                    dino_model,
+                    sam3_model,
+                    device,
+                )
             
             return JSONResponse(content={"image": result})
         finally:
