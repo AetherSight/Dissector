@@ -10,7 +10,6 @@ from PIL import Image
 from typing import Dict, Optional, List, Tuple
 import base64
 import io
-import torch
 import os
 import tempfile
 
@@ -236,73 +235,9 @@ def remove_small_components(mask: np.ndarray, min_area_ratio: float = 0.001) -> 
     return cleaned.astype(bool)
 
 
-def run_grounding_dino_for_prompts(
-    image_pil: Image.Image,
-    prompts: List[str],
-    processor,
-    dino_model,
-    device: torch.device,
-    box_threshold: float = 0.3,
-    text_threshold: float = 0.25,
-) -> np.ndarray:
-    """
-    使用 Grounding DINO 检测并返回边界框
-    
-    Args:
-        image_pil: PIL Image
-        prompts: 提示词列表
-        processor: DINO processor
-        dino_model: DINO model
-        device: PyTorch device
-        box_threshold: 框阈值
-        text_threshold: 文本阈值
-    
-    Returns:
-        边界框数组，shape (N, 4) with [x1, y1, x2, y2]
-    """
-    text = ". ".join(prompts) + "."
-    inputs = processor(images=image_pil, text=text, return_tensors="pt").to(device)
-    with torch.no_grad():
-        outputs = dino_model(**inputs)
-    
-    width, height = image_pil.size
-    target_sizes = torch.tensor([[height, width]], device=device)
-    
-    try:
-        results = processor.post_process_grounded_object_detection(
-            outputs,
-            input_ids=inputs["input_ids"],
-            threshold=box_threshold,
-            text_threshold=text_threshold,
-            target_sizes=target_sizes,
-        )[0]
-    except TypeError:
-        try:
-            results = processor.post_process_grounded_object_detection(
-                outputs,
-                input_ids=inputs["input_ids"],
-                threshold=box_threshold,
-                target_sizes=target_sizes,
-            )[0]
-        except TypeError:
-            results = processor.post_process_object_detection(
-                outputs,
-                threshold=box_threshold,
-                target_sizes=target_sizes,
-            )[0]
-    
-    boxes = results["boxes"].cpu().numpy() if "boxes" in results else np.array([])
-    return boxes
-
-
 def segment_body_parts_with_sam3(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
-    processor=None,
-    dino_model=None,
-    device: Optional[torch.device] = None,
-    box_threshold: float = 0.3,
-    text_threshold: float = 0.25,
 ) -> Dict[str, str]:
     """
     使用 SAM3 模型分割5个身体部位并返回抠图结果（base64编码）
@@ -310,11 +245,6 @@ def segment_body_parts_with_sam3(
     Args:
         image_pil: PIL Image 对象（RGB格式）
         sam3_model: SAM3Base 实例（MLX 或 Ultralytics）
-        processor: DINO processor（仅 Ultralytics 需要）
-        dino_model: DINO model（仅 Ultralytics 需要）
-        device: PyTorch device（仅 Ultralytics 需要）
-        box_threshold: DINO 框阈值（仅 Ultralytics 需要）
-        text_threshold: DINO 文本阈值（仅 Ultralytics 需要）
     
     Returns:
         字典，包含5个部位的 base64 编码图片：
@@ -332,9 +262,6 @@ def segment_body_parts_with_sam3(
     h, w = image_rgb.shape[:2]
     
     results: Dict[str, str] = {}
-    
-    # 检查是否使用 Ultralytics（需要 DINO）
-    use_dino = sam3_model.backend_name == "ultralytics" and processor is not None and dino_model is not None
     
     # 存储所有部位的 mask，用于后处理
     masks_dict: Dict[str, np.ndarray] = {}
@@ -365,26 +292,6 @@ def segment_body_parts_with_sam3(
                     continue
             
             mask = mask_total
-            
-            # 如果文本提示词方式失败且是 Ultralytics，回退到 DINO + SAM3
-            if mask is None or mask.size == 0:
-                if use_dino:
-                    logger.info(f"Text prompt failed for {part_name}, falling back to DINO + SAM3")
-                    boxes = run_grounding_dino_for_prompts(
-                        image_pil=image_pil,
-                        prompts=prompts,
-                        processor=processor,
-                        dino_model=dino_model,
-                        device=device,
-                        box_threshold=box_threshold,
-                        text_threshold=text_threshold,
-                    )
-                    
-                    if boxes.size > 0:
-                        # 使用 SAM3 从边界框生成 mask
-                        mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
-                    else:
-                        logger.warning(f"No boxes detected for {part_name}")
             
             if mask is None or mask.size == 0:
                 logger.warning(f"No mask found for {part_name}")

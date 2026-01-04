@@ -22,7 +22,6 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
-from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 from .sam3_backend import SAM3Factory, SAM3Base
 from .body_parts_segmentation import segment_body_parts_with_sam3, BODY_PARTS_PROMPTS
@@ -58,31 +57,19 @@ LEG_PROMPTS: List[str] = [
 ]
 
 def load_models(
-    dino_model_name: str,
     device: torch.device,
     sam3_backend: Optional[str] = None,
-) -> Tuple[AutoProcessor, AutoModelForZeroShotObjectDetection, SAM3Base]:
+) -> SAM3Base:
     """
     Load models for image processing.
     
     Args:
-        dino_model_name: Grounding DINO model name
-        device: PyTorch device
+        device: PyTorch device (not used for MLX, used for Ultralytics device selection)
         sam3_backend: SAM3 backend type ("mlx" or "ultralytics"), None for auto-detect
     
     Returns:
-        Tuple of (processor, dino_model, sam3_model)
+        SAM3Base instance
     """
-    # Disable downloading optional files to avoid 404 requests
-    processor = AutoProcessor.from_pretrained(
-        dino_model_name,
-        local_files_only=True,
-    )
-    dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-        dino_model_name,
-        local_files_only=True,
-    ).to(device)
-    
     # 自动检测设备类型用于 Ultralytics
     device_str = None
     if device.type == "cuda":
@@ -95,49 +82,7 @@ def load_models(
     sam3_model = SAM3Factory.create(backend=sam3_backend, device=device_str)
     logger.info(f"Loaded SAM3 model with backend: {sam3_model.backend_name}")
     
-    return processor, dino_model, sam3_model
-
-
-def run_grounding_dino(
-    image_pil: Image.Image,
-    prompts: List[str],
-    processor: AutoProcessor,
-    dino_model: AutoModelForZeroShotObjectDetection,
-    device: torch.device,
-    box_threshold: float,
-    text_threshold: float,
-) -> Dict:
-    text = ". ".join(prompts) + "."
-    inputs = processor(images=image_pil, text=text, return_tensors="pt").to(device)
-    with torch.no_grad():
-        outputs = dino_model(**inputs)
-
-    width, height = image_pil.size
-    target_sizes = torch.tensor([[height, width]], device=device)
-
-    try:
-        results = processor.post_process_grounded_object_detection(
-            outputs,
-            input_ids=inputs["input_ids"],
-            threshold=box_threshold,
-            text_threshold=text_threshold,
-            target_sizes=target_sizes,
-        )[0]
-    except TypeError:
-        try:
-            results = processor.post_process_grounded_object_detection(
-                outputs,
-                input_ids=inputs["input_ids"],
-                threshold=box_threshold,
-                target_sizes=target_sizes,
-            )[0]
-        except TypeError:
-            results = processor.post_process_object_detection(
-                outputs,
-                threshold=box_threshold,
-                target_sizes=target_sizes,
-            )[0]
-    return results
+    return sam3_model
 
 
 def remove_small_components(mask: np.ndarray, min_area_ratio: float = 0.001) -> np.ndarray:
@@ -265,10 +210,7 @@ def encode_bgr_to_base64(img_bgr: np.ndarray, ext: str = ".jpg") -> str:
 
 def remove_background(
     image_path: str,
-    processor: AutoProcessor,
-    dino_model: AutoModelForZeroShotObjectDetection,
     sam3_model: SAM3Base,
-    device: torch.device,
 ) -> str:
     image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if image_bgr is None:
@@ -281,48 +223,30 @@ def remove_background(
     person_prompts = [
         "person",
         "human",
+        "human body",
     ]
     
-    dino_res = run_grounding_dino(
-        image_pil=image_pil,
-        prompts=person_prompts,
-        processor=processor,
-        dino_model=dino_model,
-        device=device,
-        box_threshold=0.25,
-        text_threshold=0.2,
-    )
-    boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
+    # 使用文本提示词叠加方式
+    mask_total = None
+    for prompt in person_prompts:
+        try:
+            single_mask = sam3_model.generate_mask_from_text_prompt(
+                image_pil=image_pil,
+                text_prompt=prompt,
+            )
+            if single_mask is not None and single_mask.size > 0:
+                if mask_total is None:
+                    mask_total = single_mask.copy()
+                else:
+                    mask_total |= single_mask
+        except Exception as e:
+            logger.warning(f"Error with prompt '{prompt}': {e}")
+            continue
     
-    if boxes.size == 0:
+    if mask_total is None or np.sum(mask_total) == 0:
         person_mask = np.ones((h, w), dtype=bool)
     else:
-        mask_total = None
-        
-        for box in boxes:
-            x1, y1, x2, y2 = box
-            bbox = np.array([[x1, y1, x2, y2]])
-            
-            mask = sam3_model.generate_mask_from_bbox(image_pil, bbox)
-            
-            if mask is None:
-                continue
-            
-            if mask.ndim != 2:
-                continue
-            
-            if mask.shape != (h, w):
-                mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-            
-            if mask_total is None:
-                mask_total = mask.copy()
-            else:
-                mask_total |= mask
-        
-        if mask_total is None or np.sum(mask_total) == 0:
-            person_mask = np.ones((h, w), dtype=bool)
-        else:
-            person_mask = mask_total
+        person_mask = mask_total
     
     image_rgba = image_rgb.copy()
     alpha_channel = (person_mask.astype(np.uint8) * 255)
@@ -362,11 +286,6 @@ def save_debug_overlay(image_bgr: np.ndarray, mask: np.ndarray, output_path: str
 def process_image_simple(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
-    processor: Optional[AutoProcessor] = None,
-    dino_model: Optional[AutoModelForZeroShotObjectDetection] = None,
-    device: Optional[torch.device] = None,
-    box_threshold: float = 0.3,
-    text_threshold: float = 0.25,
 ) -> Dict[str, str]:
     """
     简化的图片处理函数：传入图片，返回5个部位的抠图（base64编码）
@@ -374,11 +293,6 @@ def process_image_simple(
     Args:
         image_pil: PIL Image 对象（RGB格式）
         sam3_model: SAM3Base 实例
-        processor: DINO processor（仅 Ultralytics 需要）
-        dino_model: DINO model（仅 Ultralytics 需要）
-        device: PyTorch device（仅 Ultralytics 需要）
-        box_threshold: DINO 框阈值（仅 Ultralytics 需要）
-        text_threshold: DINO 文本阈值（仅 Ultralytics 需要）
     
     Returns:
         字典，包含5个部位的 base64 编码图片
@@ -386,22 +300,12 @@ def process_image_simple(
     return segment_body_parts_with_sam3(
         image_pil=image_pil,
         sam3_model=sam3_model,
-        processor=processor,
-        dino_model=dino_model,
-        device=device,
-        box_threshold=box_threshold,
-        text_threshold=text_threshold,
     )
 
 
 def process_image(
     image_path: str,
-    processor: AutoProcessor,
-    dino_model: AutoModelForZeroShotObjectDetection,
     sam3_model: SAM3Base,
-    device: torch.device,
-    box_threshold: float,
-    text_threshold: float,
 ) -> Dict[str, str]:
     start_time = time.time()
     image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
@@ -414,203 +318,44 @@ def process_image(
 
     masks: Dict[str, np.ndarray] = {}
 
-    def detect_and_store(key: str, prompts: List[str]):
+    def process_sam3_with_text_prompts(key: str, prompts: List[str]):
+        """使用文本提示词叠加方式处理"""
         step_start = time.time()
-        dino_res = run_grounding_dino(
-            image_pil=image_pil,
-            prompts=prompts,
-            processor=processor,
-            dino_model=dino_model,
-            device=device,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-        )
-        dino_time = time.time() - step_start
-        
-        step_start = time.time()
-        boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-        masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
-        sam3_time = time.time() - step_start
-        
-        logger.info(f"[PERF] {key}: DINO={dino_time:.2f}s, SAM3={sam3_time:.2f}s, boxes={len(boxes)}")
-    
-    step_start = time.time()
-    # 尝试统一使用文本提示词叠加方式，不使用 DINO 批量检测
-    use_dino_batch = False  # 暂时禁用 DINO 批量检测，尝试文本提示词叠加
-    
-    if False:  # 禁用 DINO 批量检测
-        batch_prompts = (
-            # 整个人体
-            ["person", "human", "human body"] +
-
-            # shoes: 核心鞋类
-            ["shoe", "boot", "sneaker", "sandal"] +
-
-            # lower: 核心下装
-            ["pants", "trousers", "jeans", "shorts", "leggings"] +
-
-            # head: 头部、脸部、头发、头饰、耳部（精简但保留关键）
-            ["head", "human head", "face", "facial area", "hair accessory", "hair flower",
-            "hair", "hairstyle", "ponytail hair",
-            "hat", "cap", "helmet", "hood",
-            "headwear", "headpiece", "head accessory",
-            "hair accessory", "hair clip", "hairpin",
-            "wig", "beret", "beanie", "visor",
-            "bandana",
-            "ear", "ears", "human ear", "earring", "ear accessory",
-            "forehead", "cheek", "chin", "jaw"] +
-
-            # upper: 核心上装（包含下摆 / 长款 / 外袍）
-            ["upper body clothing", "upper garment", "top",
-            "shirt", "blouse", "jacket", "coat", "sweater", "hoodie",
-            "long coat", "long jacket", "robe", "tunic",
-            "sleeve", "long sleeve", "short sleeve",
-            "collar", "neckline", "scarf", "necklace",
-            "belt", "waistband",
-            "hem", "garment hem", "clothing hem", "bottom hem", "lower edge of clothing",
-            "lining", "inner lining"] +
-
-            # hands: 手部
-            ["hand", "hands", "human hand", "palm", "fingers"] +
-
-            # legs: 腿部
-            ["leg", "legs", "human leg", "thigh"]
-        )
-
- 
-        all_dino_res = run_grounding_dino(
-            image_pil=image_pil,
-            prompts=batch_prompts,
-            processor=processor,
-            dino_model=dino_model,
-            device=device,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-        )
-        all_boxes = all_dino_res["boxes"].cpu().numpy() if "boxes" in all_dino_res else np.array([])
-        all_labels = all_dino_res.get("labels", []) if "labels" in all_dino_res else []
-        batch_dino_time = time.time() - step_start
-        logger.info(f"[PERF] Batch DINO: {batch_dino_time:.2f}s, total boxes={len(all_boxes)}, labels={len(all_labels) if all_labels else 0}")
-        
-        # 临时调试：保存 DINO 检测结果的可视化
-        if len(all_boxes) > 0:
-            import tempfile
-            import os
-            debug_dir = tempfile.gettempdir()
-            
-            # 在原图上绘制边界框和标签
-            dino_vis = image_bgr.copy()
-            for i, box in enumerate(all_boxes):
-                x1, y1, x2, y2 = box.astype(int)
-                # 绘制边界框
-                cv2.rectangle(dino_vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                # 绘制标签
-                label = all_labels[i] if i < len(all_labels) and all_labels[i] else f"box_{i}"
-                # 计算文本大小
-                (text_width, text_height), baseline = cv2.getTextSize(
-                    label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+        mask_total = None
+        for prompt in prompts:
+            try:
+                single_mask = sam3_model.generate_mask_from_text_prompt(
+                    image_pil=image_pil,
+                    text_prompt=prompt,
                 )
-                # 绘制文本背景
-                cv2.rectangle(
-                    dino_vis,
-                    (x1, y1 - text_height - baseline - 5),
-                    (x1 + text_width, y1),
-                    (0, 255, 0),
-                    -1
-                )
-                # 绘制文本
-                cv2.putText(
-                    dino_vis,
-                    label,
-                    (x1, y1 - baseline - 2),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 0, 0),
-                    1
-                )
-            
-            dino_vis_path = os.path.join(debug_dir, "dino_detection_result.png")
-            cv2.imwrite(dino_vis_path, dino_vis)
-            logger.info(f"[DEBUG] Saved DINO detection visualization to: {dino_vis_path}")
-    else:
-        # MLX backend 不使用 DINO，直接使用文本提示词
-        all_boxes = np.array([])
-        all_labels = []
-        logger.info("[PERF] MLX backend: skipping DINO batch detection, using text prompts directly")
-    
-    use_batch = len(all_boxes) > 0
-    if use_batch and len(all_labels) != len(all_boxes):
-        logger.warning(f"[PERF] Labels count mismatch: {len(all_labels)} vs {len(all_boxes)}, falling back to individual calls")
-        use_batch = False
-    
-    def filter_boxes_by_prompts(boxes: np.ndarray, labels: List[str], target_prompts: List[str]) -> np.ndarray:
-        if len(boxes) == 0:
-            return np.array([])
-        if len(labels) == 0 or len(labels) != len(boxes):
-            return np.array([])
-        target_set = set(p.lower() for p in target_prompts)
-        filtered = []
-        for i, label in enumerate(labels):
-            if isinstance(label, str) and any(t in label.lower() for t in target_set):
-                filtered.append(boxes[i])
-        return np.array(filtered) if filtered else np.array([])
-
-    def process_sam3(key: str, prompts: List[str]):
-        step_start = time.time()
-        if use_batch:
-            boxes = filter_boxes_by_prompts(all_boxes, all_labels, prompts)
-            if len(boxes) > 0:
-                mask = mask_from_boxes(image_pil, boxes, sam3_model)
-                if mask is not None:
-                    logger.info(f"[PERF] {key}: SAM3={time.time()-step_start:.2f}s, boxes={len(boxes)}")
-                    return key, mask
-        detect_and_store(key, prompts)
-        return key, masks.get(key, np.zeros((h, w), dtype=bool))
-    
-    def process_sam3_pipelined(key: str, prompts: List[str]):
-        """流水线化处理：CPU 预处理 + GPU 推理（针对 M1 Ultra 优化）"""
-        step_start = time.time()
+                if single_mask is not None and single_mask.size > 0:
+                    if mask_total is None:
+                        mask_total = single_mask.copy()
+                    else:
+                        mask_total |= single_mask
+            except Exception as e:
+                logger.warning(f"Error with prompt '{prompt}' for {key}: {e}")
+                continue
         
-        if use_batch:
-            preprocess_start = time.time()
-            boxes = filter_boxes_by_prompts(all_boxes, all_labels, prompts)
-            preprocess_time = time.time() - preprocess_start
-            
-            if len(boxes) > 0:
-                inference_start = time.time()
-                mask = mask_from_boxes(image_pil, boxes, sam3_model)
-                inference_time = time.time() - inference_start
-                
-                if mask is not None:
-                    total_time = time.time() - step_start
-                    logger.info(f"[PERF] {key}: total={total_time:.2f}s (preprocess={preprocess_time:.3f}s, inference={inference_time:.2f}s), boxes={len(boxes)}")
-                    return key, mask
-        
-        detect_and_store(key, prompts)
-        return key, masks.get(key, np.zeros((h, w), dtype=bool))
+        if mask_total is not None:
+            logger.info(f"[PERF] {key}: SAM3={time.time()-step_start:.2f}s, prompts={len(prompts)}")
+            return key, mask_total
+        else:
+            logger.warning(f"No mask generated for {key}")
+            return key, np.zeros((h, w), dtype=bool)
 
     logger.info("[STEP] Stage 1: detecting shoes, head, lower_raw, upper_raw (sequential)...")
     stage1_start = time.time()
     
-    # 顺序处理以避免 SIGSEGV 和资源泄漏
-    if sam3_model.backend_name == "mlx":
-        for key, prompts in [("shoes", FOOTWEAR_PROMPTS), ("head", HEADWEAR_PROMPTS), 
-                              ("lower_raw", LOWER_PROMPTS), ("upper_raw", UPPER_PROMPTS)]:
-            try:
-                _, mask = process_sam3_pipelined(key, prompts)
-                masks[key] = mask
-            except Exception as e:
-                logger.error(f"[PERF] Stage 1 task {key} failed: {e}", exc_info=True)
-                masks[key] = np.zeros((h, w), dtype=bool)
-    else:
-        for key, prompts in [("shoes", FOOTWEAR_PROMPTS), ("head", HEADWEAR_PROMPTS), 
-                              ("lower_raw", LOWER_PROMPTS), ("upper_raw", UPPER_PROMPTS)]:
-            try:
-                _, mask = process_sam3(key, prompts)
-                masks[key] = mask
-            except Exception as e:
-                logger.error(f"[PERF] Stage 1 task {key} failed: {e}", exc_info=True)
-                masks[key] = np.zeros((h, w), dtype=bool)
+    # 统一使用文本提示词叠加方式
+    for key, prompts in [("shoes", FOOTWEAR_PROMPTS), ("head", HEADWEAR_PROMPTS), 
+                          ("lower_raw", LOWER_PROMPTS), ("upper_raw", UPPER_PROMPTS)]:
+        try:
+            _, mask = process_sam3_with_text_prompts(key, prompts)
+            masks[key] = mask
+        except Exception as e:
+            logger.error(f"[PERF] Stage 1 task {key} failed: {e}", exc_info=True)
+            masks[key] = np.zeros((h, w), dtype=bool)
     
     if sam3_model.backend_name == "mlx":
         try:
@@ -722,23 +467,14 @@ def process_image(
     logger.info("[STEP] Stage 2: detecting legs and hands (sequential)...")
     stage2_start = time.time()
     
-    # 顺序处理以避免 SIGSEGV 和资源泄漏
-    if sam3_model.backend_name == "mlx":
-        for key, prompts in [("legs", LEG_PROMPTS), ("hands", HAND_PROMPTS)]:
-            try:
-                _, mask = process_sam3_pipelined(key, prompts)
-                masks[key] = mask
-            except Exception as e:
-                logger.error(f"[PERF] Stage 2 task {key} failed: {e}", exc_info=True)
-                masks[key] = np.zeros((h, w), dtype=bool)
-    else:
-        for key, prompts in [("legs", LEG_PROMPTS), ("hands", HAND_PROMPTS)]:
-            try:
-                _, mask = process_sam3(key, prompts)
-                masks[key] = mask
-            except Exception as e:
-                logger.error(f"[PERF] Stage 2 task {key} failed: {e}", exc_info=True)
-                masks[key] = np.zeros((h, w), dtype=bool)
+    # 统一使用文本提示词叠加方式
+    for key, prompts in [("legs", LEG_PROMPTS), ("hands", HAND_PROMPTS)]:
+        try:
+            _, mask = process_sam3_with_text_prompts(key, prompts)
+            masks[key] = mask
+        except Exception as e:
+            logger.error(f"[PERF] Stage 2 task {key} failed: {e}", exc_info=True)
+            masks[key] = np.zeros((h, w), dtype=bool)
     
     if sam3_model.backend_name == "mlx":
         try:
