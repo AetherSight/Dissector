@@ -265,9 +265,12 @@ def mask_from_boxes(
                 kernel = np.ones((3, 3), np.uint8)
                 mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
                 mask_total = remove_small_components(mask_total, min_area_ratio=min_area_ratio)
+                logger.debug(f"[SAM3] Batch processing succeeded for {len(boxes)} boxes")
                 return mask_total
-        except Exception:
-            pass
+            else:
+                logger.debug(f"[SAM3] Batch processing returned invalid mask, falling back to loop")
+        except Exception as e:
+            logger.debug(f"[SAM3] Batch processing failed: {e}, falling back to loop")
     
     mask_total = None
     for box in boxes:
