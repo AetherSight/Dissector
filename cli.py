@@ -20,6 +20,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress noisy HTTP logs from transformers/huggingface
+logging.getLogger("httpx").setLevel(logging.ERROR)
+logging.getLogger("httpcore").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+
 from dissector.pipeline import (
     load_models,
     process_image,
