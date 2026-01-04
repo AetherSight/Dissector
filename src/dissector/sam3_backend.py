@@ -153,9 +153,9 @@ class UltralyticsSAM3(SAM3Base):
                                     best_idx = np.argmax(scores)
                                     mask = masks[best_idx].astype(bool)
                                 else:
-                                    mask = np.any(masks, axis=0).astype(bool)
+                                    mask = masks[0].astype(bool)
                             else:
-                                mask = np.any(masks, axis=0).astype(bool)
+                                mask = masks[0].astype(bool)
                         else:
                             mask = masks[0].astype(bool)
                     else:

@@ -502,16 +502,10 @@ def process_image(
         if len(labels) == 0 or len(labels) != len(boxes):
             return np.array([])
         target_set = set(p.lower() for p in target_prompts)
-        target_words = set()
-        for prompt in target_prompts:
-            words = prompt.lower().split()
-            target_words.update(words)
         filtered = []
         for i, label in enumerate(labels):
-            if isinstance(label, str):
-                label_lower = label.lower()
-                if any(t in label_lower for t in target_set) or any(w in label_lower for w in target_words):
-                    filtered.append(boxes[i])
+            if isinstance(label, str) and any(t in label.lower() for t in target_set):
+                filtered.append(boxes[i])
         return np.array(filtered) if filtered else np.array([])
 
     def process_sam3(key: str, prompts: List[str]):
