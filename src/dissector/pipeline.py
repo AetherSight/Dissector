@@ -519,18 +519,48 @@ def process_image(
                     return key, mask
         detect_and_store(key, prompts)
         return key, masks.get(key, np.zeros((h, w), dtype=bool))
+    
+    def process_sam3_pipelined(key: str, prompts: List[str]):
+        """流水线化处理：CPU 预处理 + GPU 推理（针对 M1 Ultra 优化）"""
+        step_start = time.time()
+        
+        if use_batch:
+            preprocess_start = time.time()
+            boxes = filter_boxes_by_prompts(all_boxes, all_labels, prompts)
+            preprocess_time = time.time() - preprocess_start
+            
+            if len(boxes) > 0:
+                inference_start = time.time()
+                mask = mask_from_boxes(image_pil, boxes, sam3_model)
+                inference_time = time.time() - inference_start
+                
+                if mask is not None:
+                    total_time = time.time() - step_start
+                    logger.info(f"[PERF] {key}: total={total_time:.2f}s (preprocess={preprocess_time:.3f}s, inference={inference_time:.2f}s), boxes={len(boxes)}")
+                    return key, mask
+        
+        detect_and_store(key, prompts)
+        return key, masks.get(key, np.zeros((h, w), dtype=bool))
 
     logger.info("[STEP] Stage 1: detecting shoes, head, lower_raw, upper_raw (parallel)...")
     stage1_start = time.time()
     executor = None
     try:
         executor = ThreadPoolExecutor(max_workers=4)
-        futures = {
-            executor.submit(process_sam3, "shoes", FOOTWEAR_PROMPTS): "shoes",
-            executor.submit(process_sam3, "head", HEADWEAR_PROMPTS): "head",
-            executor.submit(process_sam3, "lower_raw", LOWER_PROMPTS): "lower_raw",
-            executor.submit(process_sam3, "upper_raw", UPPER_PROMPTS): "upper_raw",
-        }
+        if sam3_model.backend_name == "mlx":
+            futures = {
+                executor.submit(process_sam3_pipelined, "shoes", FOOTWEAR_PROMPTS): "shoes",
+                executor.submit(process_sam3_pipelined, "head", HEADWEAR_PROMPTS): "head",
+                executor.submit(process_sam3_pipelined, "lower_raw", LOWER_PROMPTS): "lower_raw",
+                executor.submit(process_sam3_pipelined, "upper_raw", UPPER_PROMPTS): "upper_raw",
+            }
+        else:
+            futures = {
+                executor.submit(process_sam3, "shoes", FOOTWEAR_PROMPTS): "shoes",
+                executor.submit(process_sam3, "head", HEADWEAR_PROMPTS): "head",
+                executor.submit(process_sam3, "lower_raw", LOWER_PROMPTS): "lower_raw",
+                executor.submit(process_sam3, "upper_raw", UPPER_PROMPTS): "upper_raw",
+            }
         for future in as_completed(futures):
             try:
                 key, mask = future.result()
@@ -545,6 +575,11 @@ def process_image(
         try:
             import mlx.core as mx
             mx.eval()
+            try:
+                mx.metal.clear_cache()
+                logger.debug("[MLX] Cleared Metal cache after Stage 1")
+            except AttributeError:
+                pass
             logger.debug("[MLX] Triggered lazy evaluation for Stage 1")
         except ImportError:
             pass
@@ -591,10 +626,16 @@ def process_image(
     executor = None
     try:
         executor = ThreadPoolExecutor(max_workers=2)
-        futures = {
-            executor.submit(process_sam3, "legs", LEG_PROMPTS): "legs",
-            executor.submit(process_sam3, "hands", HAND_PROMPTS): "hands",
-        }
+        if sam3_model.backend_name == "mlx":
+            futures = {
+                executor.submit(process_sam3_pipelined, "legs", LEG_PROMPTS): "legs",
+                executor.submit(process_sam3_pipelined, "hands", HAND_PROMPTS): "hands",
+            }
+        else:
+            futures = {
+                executor.submit(process_sam3, "legs", LEG_PROMPTS): "legs",
+                executor.submit(process_sam3, "hands", HAND_PROMPTS): "hands",
+            }
         for future in as_completed(futures):
             try:
                 key, mask = future.result()
@@ -609,6 +650,11 @@ def process_image(
         try:
             import mlx.core as mx
             mx.eval()
+            try:
+                mx.metal.clear_cache()
+                logger.debug("[MLX] Cleared Metal cache after Stage 2")
+            except AttributeError:
+                pass
             logger.debug("[MLX] Triggered lazy evaluation for Stage 2")
         except ImportError:
             pass
