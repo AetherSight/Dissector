@@ -414,16 +414,16 @@ def process_image(
         boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
         masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
 
-    logger.debug("[STEP] detecting shoes ...")
+    logger.info("[STEP] detecting shoes ...")
     detect_and_store("shoes", FOOTWEAR_PROMPTS)
 
-    logger.debug("[STEP] detecting lower ...")
+    logger.info("[STEP] detecting lower ...")
     detect_and_store("lower_raw", LOWER_PROMPTS)
     lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
     masks["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
 
-    logger.debug("[STEP] detecting head (for removal) ...")
+    logger.info("[STEP] detecting head (for removal) ...")
     detect_and_store("head", HEADWEAR_PROMPTS)
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
     if np.any(head_mask):
@@ -431,7 +431,7 @@ def process_image(
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["head"] = head_mask
 
-    logger.debug("[STEP] detecting upper ...")
+    logger.info("[STEP] detecting upper ...")
     detect_and_store("upper_raw", UPPER_PROMPTS)
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_mask_current = masks.get("lower", np.zeros_like(upper_mask))
@@ -459,7 +459,7 @@ def process_image(
     masks["upper"] = upper_mask
     masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
     
-    logger.debug("[STEP] detecting legs in upper (move to lower)...")
+    logger.info("[STEP] detecting legs in upper (move to lower)...")
     detect_and_store("legs", LEG_PROMPTS)
     leg_mask = masks.get("legs", np.zeros(image_rgb.shape[:2], dtype=bool))
     leg_mask = remove_small_components(leg_mask, min_area_ratio=0.0005)
@@ -473,7 +473,7 @@ def process_image(
             upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
             masks["upper"] = upper_mask
 
-    logger.debug("[STEP] detecting hands (remove from upper)...")
+    logger.info("[STEP] detecting hands (remove from upper)...")
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = remove_small_components(hand_mask, min_area_ratio=0.0005)
@@ -484,7 +484,7 @@ def process_image(
         if np.any(overlap):
             overlap_ratio = np.sum(overlap) / max(np.sum(hand_mask), 1)
             if overlap_ratio > 0.5:
-                logger.debug(f"Hand mask mostly overlaps with lower ({overlap_ratio:.2%}), excluding overlap")
+                logger.info(f"Hand mask mostly overlaps with lower ({overlap_ratio:.2%}), excluding overlap")
                 hand_mask = hand_mask & (~overlap)
     
     if np.any(hand_mask):

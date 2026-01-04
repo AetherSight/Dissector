@@ -202,59 +202,107 @@ class MLXSAM3(SAM3Base):
         """从边界框生成 mask（MLX 实现）"""
         h, w = image_pil.size[1], image_pil.size[0]
         
-        # 检查是否需要设置新图像
-        image_id = id(image_pil)
-        if self._current_image_id != image_id:
-            self._current_state = self.processor.set_image(image_pil)
-            self._current_image_id = image_id
+        # 每次调用都重新设置图像，避免状态冲突
+        # 这对于多个 bbox 的情况更安全
+        logger.debug(f"[MLX] Setting image, size: {w}x{h}")
+        state = self.processor.set_image(image_pil)
+        logger.debug(f"[MLX] Image set, state type: {type(state)}, is_dict: {isinstance(state, dict)}")
         
         # 转换 bbox 为 MLX 格式（归一化到 [0, 1]）
         x1, y1, x2, y2 = bbox[0]
         box_normalized = np.array([[x1 / w, y1 / h, x2 / w, y2 / h]], dtype=np.float32)
+        logger.debug(f"[MLX] Bbox normalized: {box_normalized}")
         
-        # 设置 box prompt
-        try:
-            if hasattr(self.processor, 'set_box_prompt'):
-                state = self.processor.set_box_prompt(box_normalized, self._current_state)
-            elif hasattr(self.processor, 'set_bbox_prompt'):
-                state = self.processor.set_bbox_prompt(box_normalized, self._current_state)
-            else:
-                # 回退方案
-                if isinstance(self._current_state, dict):
-                    state = self._current_state.copy()
-                    state['boxes'] = box_normalized
-                else:
-                    state = self.processor(box_normalized, self._current_state)
-        except Exception as e:
-            logger.warning(f"Failed to set box prompt: {e}, trying alternative")
+        # 尝试不同的 API 方法设置 box prompt
+        state_after_box = None
+        api_method = None
+        
+        # 方法1: 尝试 set_box_prompt
+        if hasattr(self.processor, 'set_box_prompt'):
             try:
-                state = self.processor(box_normalized, self._current_state)
-            except Exception as e2:
-                logger.error(f"Failed to generate mask from bbox: {e2}")
-                return np.zeros((h, w), dtype=bool)
+                logger.debug("[MLX] Trying set_box_prompt")
+                state_after_box = self.processor.set_box_prompt(box_normalized, state)
+                api_method = "set_box_prompt"
+                logger.debug(f"[MLX] set_box_prompt succeeded, state type: {type(state_after_box)}")
+            except Exception as e:
+                logger.warning(f"[MLX] set_box_prompt failed: {e}")
+        
+        # 方法2: 尝试 set_bbox_prompt
+        if state_after_box is None and hasattr(self.processor, 'set_bbox_prompt'):
+            try:
+                logger.debug("[MLX] Trying set_bbox_prompt")
+                state_after_box = self.processor.set_bbox_prompt(box_normalized, state)
+                api_method = "set_bbox_prompt"
+                logger.debug(f"[MLX] set_bbox_prompt succeeded, state type: {type(state_after_box)}")
+            except Exception as e:
+                logger.warning(f"[MLX] set_bbox_prompt failed: {e}")
+        
+        # 方法3: 尝试直接设置 boxes
+        if state_after_box is None:
+            try:
+                logger.debug("[MLX] Trying direct box assignment")
+                if isinstance(state, dict):
+                    state_after_box = state.copy()
+                    state_after_box['boxes'] = box_normalized
+                    api_method = "direct_dict"
+                else:
+                    # 尝试调用 processor 本身
+                    state_after_box = self.processor(box_normalized, state)
+                    api_method = "processor_call"
+                logger.debug(f"[MLX] Direct assignment succeeded, state type: {type(state_after_box)}")
+            except Exception as e:
+                logger.warning(f"[MLX] Direct assignment failed: {e}")
+        
+        if state_after_box is None:
+            logger.error("[MLX] All methods failed to set box prompt")
+            return np.zeros((h, w), dtype=bool)
+        
+        logger.debug(f"[MLX] Using API method: {api_method}")
         
         # 获取 masks
-        if isinstance(state, dict):
-            masks = state.get("masks", [])
+        masks = None
+        if isinstance(state_after_box, dict):
+            masks = state_after_box.get("masks", [])
+            logger.debug(f"[MLX] Got masks from dict, count: {len(masks) if masks else 0}")
+            if masks:
+                logger.debug(f"[MLX] First mask type: {type(masks[0])}, shape: {getattr(masks[0], 'shape', 'N/A')}")
         else:
-            masks = getattr(state, "masks", [])
+            masks = getattr(state_after_box, "masks", [])
+            logger.debug(f"[MLX] Got masks from attribute, count: {len(masks) if masks else 0}")
+            if not masks:
+                # 尝试其他可能的属性名
+                for attr in ['mask', 'segmentation', 'output']:
+                    if hasattr(state_after_box, attr):
+                        potential = getattr(state_after_box, attr)
+                        logger.debug(f"[MLX] Found attribute '{attr}': {type(potential)}")
+                        if potential is not None:
+                            masks = [potential] if not isinstance(potential, (list, tuple)) else potential
+                            break
         
         if not masks or len(masks) == 0:
+            logger.warning(f"[MLX] No masks found in state. State keys/attrs: {list(state_after_box.keys()) if isinstance(state_after_box, dict) else dir(state_after_box)[:10]}")
             return np.zeros((h, w), dtype=bool)
         
         # 转换 mask 为 numpy array
         mask = masks[0] if isinstance(masks[0], np.ndarray) else np.array(masks[0])
+        logger.debug(f"[MLX] Mask converted, dtype: {mask.dtype}, shape: {mask.shape}, min: {mask.min()}, max: {mask.max()}")
         
         # 确保 mask 是布尔类型
         if mask.dtype != bool:
-            mask = mask > 0.5 if mask.max() <= 1.0 else mask > 127
+            threshold = 0.5 if mask.max() <= 1.0 else 127
+            mask = mask > threshold
+            logger.debug(f"[MLX] Mask thresholded with {threshold}, new dtype: {mask.dtype}")
         
         # 确保尺寸匹配
         if mask.shape != (h, w):
+            logger.debug(f"[MLX] Resizing mask from {mask.shape} to ({h}, {w})")
             mask_uint8 = (mask.astype(np.uint8) * 255) if mask.dtype == bool else mask.astype(np.uint8)
             mask_pil = Image.fromarray(mask_uint8)
             mask_pil = mask_pil.resize((w, h), Image.NEAREST)
             mask = np.array(mask_pil) > 127
+        
+        mask_sum = np.sum(mask)
+        logger.debug(f"[MLX] Final mask: shape={mask.shape}, dtype={mask.dtype}, sum={mask_sum}, coverage={mask_sum/(h*w):.2%}")
         
         return mask.astype(bool)
     
