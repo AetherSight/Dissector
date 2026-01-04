@@ -521,12 +521,32 @@ def process_image(
         return key, masks.get(key, np.zeros((h, w), dtype=bool))
 
     use_parallel = sam3_model.backend_name != "mlx"
+    is_mlx = sam3_model.backend_name == "mlx"
+    
     if use_parallel:
         logger.info("[STEP] Stage 1: detecting shoes, head, lower_raw, upper_raw (parallel)...")
     else:
         logger.info("[STEP] Stage 1: detecting shoes, head, lower_raw, upper_raw (serial)...")
     stage1_start = time.time()
-    if use_parallel:
+    
+    if is_mlx and use_batch and hasattr(sam3_model, 'generate_masks_from_bbox_groups'):
+        bbox_groups = {}
+        for key, prompts in [("shoes", FOOTWEAR_PROMPTS), ("head", HEADWEAR_PROMPTS), ("lower_raw", LOWER_PROMPTS), ("upper_raw", UPPER_PROMPTS)]:
+            boxes = filter_boxes_by_prompts(all_boxes, all_labels, prompts)
+            if len(boxes) > 0:
+                bbox_groups[key] = boxes
+        
+        if bbox_groups:
+            logger.info(f"[SAM3] Batch processing {len(bbox_groups)} groups with shared set_image...")
+            stage1_masks = sam3_model.generate_masks_from_bbox_groups(image_pil, bbox_groups)
+            for key, mask in stage1_masks.items():
+                if mask is not None:
+                    masks[key] = mask
+        else:
+            for key, prompts in [("shoes", FOOTWEAR_PROMPTS), ("head", HEADWEAR_PROMPTS), ("lower_raw", LOWER_PROMPTS), ("upper_raw", UPPER_PROMPTS)]:
+                key_result, mask = process_sam3(key, prompts)
+                masks[key_result] = mask
+    elif use_parallel:
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = {
                 executor.submit(process_sam3, "shoes", FOOTWEAR_PROMPTS): "shoes",
@@ -583,7 +603,25 @@ def process_image(
     else:
         logger.info("[STEP] Stage 2: detecting legs and hands (serial)...")
     stage2_start = time.time()
-    if use_parallel:
+    
+    if is_mlx and use_batch and hasattr(sam3_model, 'generate_masks_from_bbox_groups'):
+        bbox_groups = {}
+        for key, prompts in [("legs", LEG_PROMPTS), ("hands", HAND_PROMPTS)]:
+            boxes = filter_boxes_by_prompts(all_boxes, all_labels, prompts)
+            if len(boxes) > 0:
+                bbox_groups[key] = boxes
+        
+        if bbox_groups:
+            logger.info(f"[SAM3] Batch processing {len(bbox_groups)} groups with shared set_image...")
+            stage2_masks = sam3_model.generate_masks_from_bbox_groups(image_pil, bbox_groups)
+            for key, mask in stage2_masks.items():
+                if mask is not None:
+                    masks[key] = mask
+        else:
+            for key, prompts in [("legs", LEG_PROMPTS), ("hands", HAND_PROMPTS)]:
+                key_result, mask = process_sam3(key, prompts)
+                masks[key_result] = mask
+    elif use_parallel:
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = {
                 executor.submit(process_sam3, "legs", LEG_PROMPTS): "legs",

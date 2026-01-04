@@ -7,7 +7,7 @@ import platform
 import logging
 import threading
 from abc import ABC, abstractmethod
-from typing import Union, Optional
+from typing import Union, Optional, Dict
 import numpy as np
 from PIL import Image
 import cv2
@@ -535,6 +535,105 @@ class MLXSAM3(SAM3Base):
             return np.zeros((h, w), dtype=bool)
         
         return mask_total.astype(bool)
+    
+    def generate_masks_from_bbox_groups(
+        self,
+        image_pil: Image.Image,
+        bbox_groups: Dict[str, np.ndarray],
+    ) -> Dict[str, Optional[np.ndarray]]:
+        """批量从多个 bbox 组生成 masks（MLX 实现，复用 set_image）"""
+        h, w = image_pil.size[1], image_pil.size[0]
+        
+        state = self.processor.set_image(image_pil)
+        
+        results = {}
+        
+        for key, bboxes in bbox_groups.items():
+            if bboxes.size == 0:
+                results[key] = np.zeros((h, w), dtype=bool)
+                continue
+            
+            mask_total = None
+            
+            for bbox in bboxes:
+                x1, y1, x2, y2 = bbox
+                x1_norm, y1_norm = float(x1 / w), float(y1 / h)
+                x2_norm, y2_norm = float(x2 / w), float(y2 / h)
+                
+                center_x = float((x1_norm + x2_norm) / 2.0)
+                center_y = float((y1_norm + y2_norm) / 2.0)
+                box_width = float(x2_norm - x1_norm)
+                box_height = float(y2_norm - y1_norm)
+                
+                box_list = [center_x, center_y, box_width, box_height]
+                
+                try:
+                    state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
+                except Exception:
+                    continue
+                
+                if state_after_box is None:
+                    continue
+                
+                masks = None
+                if isinstance(state_after_box, dict):
+                    masks_raw = state_after_box.get("masks", None)
+                    if masks_raw is not None:
+                        try:
+                            if hasattr(masks_raw, '__array__'):
+                                masks = np.array(masks_raw)
+                            elif isinstance(masks_raw, (list, tuple)):
+                                masks = np.array([np.array(m) if hasattr(m, '__array__') else m for m in masks_raw])
+                            else:
+                                masks = np.array(masks_raw)
+                        except Exception:
+                            continue
+                
+                if masks is None or len(masks) == 0:
+                    continue
+                
+                if isinstance(masks, (list, tuple)):
+                    mask_array = np.array([np.array(m) if hasattr(m, '__array__') else m for m in masks])
+                else:
+                    mask_array = np.array(masks) if hasattr(masks, '__array__') else np.array(masks)
+                
+                if mask_array.ndim == 3:
+                    scores = None
+                    if isinstance(state_after_box, dict):
+                        scores_raw = state_after_box.get("scores", None)
+                        if scores_raw is not None:
+                            scores = np.array(scores_raw) if hasattr(scores_raw, '__array__') else np.array(scores_raw)
+                    
+                    if scores is not None and len(scores) == mask_array.shape[0]:
+                        best_idx = np.argmax(scores)
+                        mask = mask_array[best_idx]
+                    else:
+                        mask = np.any(mask_array, axis=0).astype(bool)
+                elif mask_array.ndim == 2:
+                    mask = mask_array.astype(bool)
+                else:
+                    while mask_array.ndim > 2:
+                        mask_array = mask_array[0]
+                    mask = mask_array.astype(bool)
+                
+                if mask.ndim != 2 or mask.shape != (h, w):
+                    continue
+                
+                if mask.dtype != bool:
+                    threshold = 0.5 if mask.max() <= 1.0 else 127
+                    mask = mask > threshold
+                
+                if mask_total is None:
+                    mask_total = mask.copy()
+                else:
+                    mask_total |= mask
+            
+            if mask_total is None:
+                results[key] = np.zeros((h, w), dtype=bool)
+            else:
+                results[key] = mask_total.astype(bool)
+        
+        return results
     
     @property
     def backend_name(self) -> str:
