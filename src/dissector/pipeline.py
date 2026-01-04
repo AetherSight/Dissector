@@ -514,14 +514,14 @@ def process_image(
             boxes = filter_boxes_by_prompts(all_boxes, all_labels, prompts)
             if len(boxes) > 0:
                 mask = mask_from_boxes(image_pil, boxes, sam3_model)
-                logger.info(f"[PERF] {key}: SAM3={time.time()-step_start:.2f}s, boxes={len(boxes)}")
-                return key, mask
-            else:
-                detect_and_store(key, prompts)
-                return key, masks.get(key)
+                if mask is not None:
+                    logger.info(f"[PERF] {key}: SAM3={time.time()-step_start:.2f}s, boxes={len(boxes)}")
+                    return key, mask
+            detect_and_store(key, prompts)
+            return key, masks.get(key, np.zeros((h, w), dtype=bool))
         else:
             detect_and_store(key, prompts)
-            return key, masks.get(key)
+            return key, masks.get(key, np.zeros((h, w), dtype=bool))
 
     logger.info("[STEP] Stage 1: detecting shoes and head (parallel)...")
     stage1_start = time.time()
