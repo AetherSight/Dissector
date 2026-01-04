@@ -2,6 +2,7 @@
 Entry point for running dissector as a module: python -m dissector
 """
 import os
+import platform
 import multiprocessing
 import uvicorn
 
@@ -18,8 +19,11 @@ def main():
         uvicorn.run("dissector.app:app", host='0.0.0.0', port=port, log_level='info', reload=True)
     else:
         if workers <= 0:
-            cpu_count = multiprocessing.cpu_count()
-            workers = min(cpu_count, 4)
+            if platform.system() == "Darwin":
+                workers = 1
+            else:
+                cpu_count = multiprocessing.cpu_count()
+                workers = min(cpu_count, 4)
         
         uvicorn.run(
             "dissector.app:app",
