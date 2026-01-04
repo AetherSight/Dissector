@@ -244,7 +244,6 @@ class MLXSAM3(SAM3Base):
         logger.debug(f"[MLX] Using API method: {api_method}")
         logger.debug(f"[MLX] State after box keys: {list(state_after_box.keys()) if isinstance(state_after_box, dict) else 'N/A'}")
         
-        # add_geometric_prompt 会自动运行推理，所以应该已经生成了 masks
         masks = None
         
         if isinstance(state_after_box, dict):
