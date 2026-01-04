@@ -269,6 +269,9 @@ class MLXSAM3(SAM3Base):
             self._current_state = None
             self._current_image_id = None
             
+            # 线程安全锁（MLX 支持多线程，但需要保护共享资源）
+            self._lock = threading.Lock()
+            
         except ImportError as e:
             logger.error(f"Failed to import MLX SAM3: {e}")
             raise RuntimeError("MLX SAM3 is required on macOS") from e
@@ -281,7 +284,8 @@ class MLXSAM3(SAM3Base):
         """从边界框生成 mask（MLX 实现）"""
         h, w = image_pil.size[1], image_pil.size[0]
         
-        state = self.processor.set_image(image_pil)
+        with self._lock:
+            state = self.processor.set_image(image_pil)
         
         x1, y1, x2, y2 = bbox[0]
         x1_norm, y1_norm = float(x1 / w), float(y1 / h)
@@ -295,7 +299,8 @@ class MLXSAM3(SAM3Base):
         box_list = [center_x, center_y, box_width, box_height]
         
         try:
-            state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
+            with self._lock:
+                state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
             api_method = "add_geometric_prompt"
         except Exception as e:
             logger.error(f"[MLX] add_geometric_prompt failed: {e}", exc_info=True)
@@ -454,7 +459,8 @@ class MLXSAM3(SAM3Base):
         
         h, w = image_pil.size[1], image_pil.size[0]
         
-        state = self.processor.set_image(image_pil)
+        with self._lock:
+            state = self.processor.set_image(image_pil)
         
         mask_total = None
         
@@ -471,7 +477,8 @@ class MLXSAM3(SAM3Base):
             box_list = [center_x, center_y, box_width, box_height]
             
             try:
-                state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
+                with self._lock:
+                    state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
             except Exception:
                 continue
             
