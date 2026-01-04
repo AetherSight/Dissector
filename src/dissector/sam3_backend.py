@@ -403,86 +403,39 @@ class MLXSAM3(SAM3Base):
         return None
 
     def _direct_batch_inference(self, image_pil, bboxes):
-        """直接使用 MLX 模型 API 的批量回退方法"""
-        import mlx.core as mx
-
+        """批量处理 - 逐个处理每个 bbox 然后合并"""
         h, w = image_pil.size[1], image_pil.size[0]
 
-        # 预处理
-        img = np.array(image_pil)
-        scale = 1024 / max(h, w)
-        new_h, new_w = int(h * scale), int(w * scale)
-        img = cv2.resize(img, (new_w, new_h))
-        img = (img.astype(np.float32) / 255.0)
-        img_mx = mx.array(img)
-        img_mx = mx.expand_dims(img_mx, 0)
-
-        # 缩放所有 bboxes
-        bboxes_scaled = bboxes * scale
-        boxes_mx = mx.array(bboxes_scaled)
-
-        # 批量处理 - 逐个处理每个 bbox 然后合并
-        try:
-            all_masks = []
-            for bbox in bboxes:
+        # 逐个处理每个 bbox 然后合并
+        all_masks = []
+        failed_count = 0
+        
+        for i, bbox in enumerate(bboxes):
+            try:
                 single_result = self._direct_inference(image_pil, bbox.reshape(1, 4))
                 if single_result and "masks" in single_result:
                     all_masks.append(single_result["masks"])
+                else:
+                    failed_count += 1
+                    logger.debug(f"Bbox {i} inference returned no mask")
+            except Exception as e:
+                failed_count += 1
+                logger.debug(f"Bbox {i} inference failed: {e}")
 
-            if not all_masks:
-                return None
+        if not all_masks:
+            logger.warning(f"No valid masks generated for {len(bboxes)} bboxes (failed: {failed_count})")
+            return None
 
-            # 合并所有 mask
+        if failed_count > 0:
+            logger.info(f"Generated {len(all_masks)}/{len(bboxes)} masks, {failed_count} failed")
+
+        # 合并所有 mask
+        try:
             combined_mask = np.any(all_masks, axis=0)
             return {"masks": combined_mask}
-
         except Exception as e:
-            logger.error(f"Batch processing failed: {e}")
+            logger.error(f"Failed to combine masks: {e}", exc_info=True)
             return None
-
-        if masks is None:
-            return None
-
-        # 转换为 numpy
-        masks_np = np.array(masks)
-
-        # 处理不同的输出格式
-        if masks_np.ndim == 5:  # (1, N, 3, H, W)
-            masks_np = masks_np[0]  # (N, 3, H, W)
-
-        # 对每个 bbox 选择最佳 mask，然后合并
-        final_masks = []
-        for i in range(len(bboxes)):
-            if masks_np.ndim == 4:  # (N, 3, H, W)
-                bbox_masks = masks_np[i]  # (3, H, W)
-            elif masks_np.ndim == 3:  # (3, H, W) - 单 bbox
-                bbox_masks = masks_np
-            else:
-                continue
-
-            if scores is not None:
-                scores_np = np.array(scores)
-                if scores_np.ndim == 3:  # (1, N, 3)
-                    scores_np = scores_np[0, i]  # (3,)
-                elif scores_np.ndim == 2:  # (N, 3)
-                    scores_np = scores_np[i]    # (3,)
-                best_idx = np.argmax(scores_np)
-            else:
-                best_idx = 0
-
-            mask = bbox_masks[best_idx] > 0
-            final_masks.append(mask)
-
-        # 合并所有 bbox 的 mask
-        if final_masks:
-            combined_mask = np.any(final_masks, axis=0)
-        else:
-            combined_mask = np.zeros((256, 256), dtype=bool)
-
-        # 调整尺寸
-        combined_mask = cv2.resize(combined_mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-
-        return {"masks": combined_mask}
 
     @property
     def backend_name(self) -> str:
