@@ -15,8 +15,7 @@ import torch
 from PIL import Image
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
-from sam3.model_builder import build_sam3_image_model
-from sam3.model.sam3_image_processor import Sam3Processor
+from ultralytics import SAM
 
 
 def get_device() -> torch.device:
@@ -125,7 +124,6 @@ LEG_PROMPTS: List[str] = [
 ]
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-BPE_PATH = os.path.join(PROJECT_ROOT, "assets", "bpe_simple_vocab_16e6.txt.gz")
 
 def find_sam3_checkpoint() -> str:
     import glob
@@ -169,19 +167,12 @@ def find_sam3_checkpoint() -> str:
 
 SAM3_CHECKPOINT_PATH = find_sam3_checkpoint()
 
-def load_models(dino_model_name: str, device: torch.device) -> Tuple[AutoProcessor, AutoModelForZeroShotObjectDetection, Sam3Processor]:
+def load_models(dino_model_name: str, device: torch.device) -> Tuple[AutoProcessor, AutoModelForZeroShotObjectDetection, SAM]:
     processor = AutoProcessor.from_pretrained(dino_model_name)
     dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(dino_model_name).to(device)
 
-    sam3_model = build_sam3_image_model(
-        bpe_path=BPE_PATH,
-        device=device,
-        checkpoint_path=SAM3_CHECKPOINT_PATH,
-        load_from_HF=False,
-    )
-    sam3_model = sam3_model.to(device)
-    sam3_processor = Sam3Processor(sam3_model)
-    return processor, dino_model, sam3_processor
+    sam3_model = SAM(SAM3_CHECKPOINT_PATH)
+    return processor, dino_model, sam3_model
 
 
 def run_grounding_dino(
@@ -248,66 +239,52 @@ def remove_small_components(mask: np.ndarray, min_area_ratio: float = 0.001) -> 
 def mask_from_boxes(
     image_pil: Image.Image,
     boxes: np.ndarray,
-    sam3_processor: Sam3Processor,
+    sam3_model: SAM,
     min_area_ratio: float = 0.001,
 ) -> np.ndarray:
     if boxes.size == 0:
         h, w = image_pil.size[1], image_pil.size[0]
         return np.zeros((h, w), dtype=bool)
 
-    inference_state = sam3_processor.set_image(image_pil)
-    mask_total = None
     h, w = image_pil.size[1], image_pil.size[0]
+    mask_total = None
 
     for box in boxes:
-        sam3_processor.reset_all_prompts(inference_state)
-
         x1, y1, x2, y2 = box
-        center_x = (x1 + x2) / 2.0 / w
-        center_y = (y1 + y2) / 2.0 / h
-        width = (x2 - x1) / w
-        height = (y2 - y1) / h
-        box_normalized = [center_x, center_y, width, height]
-
-        output = sam3_processor.add_geometric_prompt(
-            box=box_normalized,
-            label=True,
-            state=inference_state
-        )
-
-        masks = output.get("masks", None)
-        if masks is not None and masks.numel() > 0:
-            masks_np = masks.cpu().numpy()
-
-            if masks_np.ndim == 4:
-                masks_2d = masks_np.squeeze(1)
-                mask = np.any(masks_2d, axis=0).astype(bool)
-            elif masks_np.ndim == 3:
-                mask = np.any(masks_np, axis=0).astype(bool)
-            elif masks_np.ndim == 2:
-                mask = masks_np.astype(bool)
-            else:
-                mask = masks_np.squeeze()
-                if mask.ndim == 3:
-                    mask = np.any(mask, axis=0).astype(bool)
-                elif mask.ndim == 2:
-                    mask = mask.astype(bool)
+        bbox = np.array([[x1, y1, x2, y2]])
+        
+        imgsz = max(h, w)
+        imgsz = ((imgsz + 13) // 14) * 14
+        results = sam3_model(image_pil, bboxes=bbox, imgsz=imgsz, verbose=False)
+        
+        if results and len(results) > 0:
+            result = results[0]
+            if hasattr(result, 'masks') and result.masks is not None:
+                masks = result.masks.data.cpu().numpy()
+                
+                if masks.ndim == 3:
+                    mask = np.any(masks, axis=0).astype(bool)
+                elif masks.ndim == 2:
+                    mask = masks.astype(bool)
                 else:
-                    logger.warning(f"Unexpected mask shape after squeeze: {mask.shape}, skipping...")
+                    mask = masks.squeeze()
+                    if mask.ndim == 3:
+                        mask = np.any(mask, axis=0).astype(bool)
+                    elif mask.ndim == 2:
+                        mask = mask.astype(bool)
+                    else:
+                        continue
+
+                if mask.ndim != 2:
                     continue
 
-            if mask.ndim != 2:
-                logger.warning(f"Mask is not 2D after processing: {mask.shape}, skipping...")
-                continue
+                if mask.shape != (h, w):
+                    mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
 
-            if mask.shape != (h, w):
-                logger.warning(f"Mask shape {mask.shape} doesn't match image size ({h}, {w}), resizing...")
-                mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-
-            if mask_total is None:
-                mask_total = mask.copy()
-            else:
-                mask_total |= mask
+                if mask_total is None:
+                    mask_total = mask.copy()
+                else:
+                    mask_total |= mask
 
     if mask_total is None:
         return np.zeros((h, w), dtype=bool)
@@ -352,7 +329,7 @@ def remove_background(
     image_path: str,
     processor: AutoProcessor,
     dino_model: AutoModelForZeroShotObjectDetection,
-    sam3_processor: Sam3Processor,
+    sam3_model: SAM,
     device: torch.device,
 ) -> str:
     image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
@@ -382,55 +359,44 @@ def remove_background(
     if boxes.size == 0:
         person_mask = np.ones((h, w), dtype=bool)
     else:
-        inference_state = sam3_processor.set_image(image_pil)
         mask_total = None
         
         for box in boxes:
-            sam3_processor.reset_all_prompts(inference_state)
-            
             x1, y1, x2, y2 = box
-            center_x = (x1 + x2) / 2.0 / w
-            center_y = (y1 + y2) / 2.0 / h
-            width = (x2 - x1) / w
-            height = (y2 - y1) / h
-            box_normalized = [center_x, center_y, width, height]
+            bbox = np.array([[x1, y1, x2, y2]])
             
-            output = sam3_processor.add_geometric_prompt(
-                box=box_normalized,
-                label=True,
-                state=inference_state
-            )
+            imgsz = max(h, w)
+            imgsz = ((imgsz + 13) // 14) * 14
+            results = sam3_model(image_pil, bboxes=bbox, imgsz=imgsz, verbose=False)
             
-            masks = output.get("masks", None)
-            if masks is not None and masks.numel() > 0:
-                masks_np = masks.cpu().numpy()
-                
-                if masks_np.ndim == 4:
-                    masks_2d = masks_np.squeeze(1)
-                    mask = np.any(masks_2d, axis=0).astype(bool)
-                elif masks_np.ndim == 3:
-                    mask = np.any(masks_np, axis=0).astype(bool)
-                elif masks_np.ndim == 2:
-                    mask = masks_np.astype(bool)
-                else:
-                    mask = masks_np.squeeze()
-                    if mask.ndim == 3:
-                        mask = np.any(mask, axis=0).astype(bool)
-                    elif mask.ndim == 2:
-                        mask = mask.astype(bool)
+            if results and len(results) > 0:
+                result = results[0]
+                if hasattr(result, 'masks') and result.masks is not None:
+                    masks = result.masks.data.cpu().numpy()
+                    
+                    if masks.ndim == 3:
+                        mask = np.any(masks, axis=0).astype(bool)
+                    elif masks.ndim == 2:
+                        mask = masks.astype(bool)
                     else:
+                        mask = masks.squeeze()
+                        if mask.ndim == 3:
+                            mask = np.any(mask, axis=0).astype(bool)
+                        elif mask.ndim == 2:
+                            mask = mask.astype(bool)
+                        else:
+                            continue
+                    
+                    if mask.ndim != 2:
                         continue
-                
-                if mask.ndim != 2:
-                    continue
-                
-                if mask.shape != (h, w):
-                    mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-                
-                if mask_total is None:
-                    mask_total = mask.copy()
-                else:
-                    mask_total |= mask
+                    
+                    if mask.shape != (h, w):
+                        mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                    
+                    if mask_total is None:
+                        mask_total = mask.copy()
+                    else:
+                        mask_total |= mask
         
         if mask_total is None or np.sum(mask_total) == 0:
             person_mask = np.ones((h, w), dtype=bool)
@@ -476,7 +442,7 @@ def process_image(
     image_path: str,
     processor: AutoProcessor,
     dino_model: AutoModelForZeroShotObjectDetection,
-    sam3_processor: Sam3Processor,
+    sam3_model: SAM,
     device: torch.device,
     box_threshold: float,
     text_threshold: float,
@@ -502,7 +468,7 @@ def process_image(
             text_threshold=text_threshold,
         )
         boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-        masks[key] = mask_from_boxes(image_pil, boxes, sam3_processor)
+        masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
 
     logger.debug("[STEP] detecting shoes ...")
     detect_and_store("shoes", FOOTWEAR_PROMPTS)
@@ -609,7 +575,7 @@ def run_batch(
     device = get_device()
     logger.info(f"device: {device} (platform: {platform.system()})")
     logger.info("loading models ...")
-    processor, dino_model, sam3_processor = load_models(dino_model_name, device)
+    processor, dino_model, sam3_model = load_models(dino_model_name, device)
     logger.info("models loaded.")
 
     images = [
@@ -626,7 +592,7 @@ def run_batch(
             image_path=img,
             processor=processor,
             dino_model=dino_model,
-            sam3_processor=sam3_processor,
+            sam3_model=sam3_model,
             device=device,
             box_threshold=box_threshold,
             text_threshold=text_threshold,

@@ -22,7 +22,7 @@ app = FastAPI(title="Dissector", version="0.1.0")
 # Global model instances (loaded on startup)
 processor = None
 dino_model = None
-sam3_processor = None
+sam3_model = None
 device = None
 
 # Thread pool for CPU-intensive image processing
@@ -42,13 +42,13 @@ logger.info(f"Thread pool initialized with {_max_workers} workers")
 @app.on_event("startup")
 async def load_models_on_startup():
     """Load models when the service starts."""
-    global processor, dino_model, sam3_processor, device
+    global processor, dino_model, sam3_model, device
     
     device = get_device()
     logger.info(f"Loading models on device: {device}")
     
     try:
-        processor, dino_model, sam3_processor = load_models(
+        processor, dino_model, sam3_model = load_models(
             dino_model_name="IDEA-Research/grounding-dino-base",
             device=device
         )
@@ -64,7 +64,7 @@ async def health_check():
     return {
         "status": "healthy",
         "device": str(device) if device else "unknown",
-        "models_loaded": all([processor, dino_model, sam3_processor])
+        "models_loaded": all([processor, dino_model, sam3_model])
     }
 
 
@@ -79,7 +79,7 @@ async def segment_image(
     
     Returns base64-encoded images for: upper, lower, shoes, head, hands
     """
-    if not all([processor, dino_model, sam3_processor]):
+    if not all([processor, dino_model, sam3_model]):
         raise HTTPException(status_code=503, detail="Models not loaded")
     
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -110,7 +110,7 @@ async def segment_image(
                 tmp_path,
                 processor,
                 dino_model,
-                sam3_processor,
+                sam3_model,
                 device,
                 box_threshold,
                 text_threshold,
@@ -136,7 +136,7 @@ async def remove_background_endpoint(
     
     Returns base64-encoded PNG image with transparent background.
     """
-    if not all([processor, dino_model, sam3_processor]):
+    if not all([processor, dino_model, sam3_model]):
         raise HTTPException(status_code=503, detail="Models not loaded")
     
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -163,7 +163,7 @@ async def remove_background_endpoint(
                 tmp_path,
                 processor,
                 dino_model,
-                sam3_processor,
+                sam3_model,
                 device,
             )
             

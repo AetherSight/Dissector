@@ -17,6 +17,7 @@ dependencies = [
     "fastapi (>=0.115.0,<1.0.0)",
     "uvicorn[standard] (>=0.32.0,<1.0.0)",
     "python-multipart (>=0.0.12,<1.0.0)",
+    "ultralytics (>=8.3.247,<9.0.0)",
 ]
 
 
