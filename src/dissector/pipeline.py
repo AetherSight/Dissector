@@ -2,6 +2,7 @@ import os
 import base64
 import logging
 import platform
+import time
 from typing import Dict, List, Tuple, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -436,6 +437,7 @@ def process_image(
     box_threshold: float,
     text_threshold: float,
 ) -> Dict[str, str]:
+    start_time = time.time()
     image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if image_bgr is None:
         print(f"[WARN] cannot read image: {image_path}")
@@ -447,6 +449,7 @@ def process_image(
     masks: Dict[str, np.ndarray] = {}
 
     def detect_and_store(key: str, prompts: List[str]):
+        step_start = time.time()
         dino_res = run_grounding_dino(
             image_pil=image_pil,
             prompts=prompts,
@@ -456,8 +459,14 @@ def process_image(
             box_threshold=box_threshold,
             text_threshold=text_threshold,
         )
+        dino_time = time.time() - step_start
+        
+        step_start = time.time()
         boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
         masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
+        sam3_time = time.time() - step_start
+        
+        logger.info(f"[PERF] {key}: DINO={dino_time:.2f}s, SAM3={sam3_time:.2f}s, boxes={len(boxes)}")
 
     logger.info("[STEP] detecting shoes ...")
     detect_and_store("shoes", FOOTWEAR_PROMPTS)
@@ -547,10 +556,15 @@ def process_image(
         ("head", "head"),
         ("hands", "hands"),
     ]
+    step_start = time.time()
     for key, name in outputs:
         mask_part = masks.get(key, np.zeros((h, w), dtype=bool))
         out_img = render_white_bg(image_bgr, mask_part)
         results[name] = encode_bgr_to_base64(out_img, ext=".jpg")
+    encode_time = time.time() - step_start
+    
+    total_time = time.time() - start_time
+    logger.info(f"[PERF] Total: {total_time:.2f}s (encode: {encode_time:.2f}s)")
     return results
 
 
