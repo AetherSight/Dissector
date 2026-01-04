@@ -265,7 +265,7 @@ class MLXSAM3(SAM3Base):
             
             logger.info("Loading MLX SAM3 model...")
             self.model = build_sam3_image_model()
-            self.processor = Sam3Processor(self.model, confidence_threshold=0.5)
+            self.processor = Sam3Processor(self.model, confidence_threshold=0.0)
             
             # 状态管理
             self._current_state = None
@@ -348,7 +348,7 @@ class MLXSAM3(SAM3Base):
                         best_idx = np.argmax(scores)
                         mask = mask_array[best_idx].astype(bool)
                     else:
-                        mask = mask_array[0].astype(bool)
+                        mask = np.any(mask_array, axis=0).astype(bool)
                 else:
                     mask = mask_array[0].astype(bool)
             else:
@@ -359,7 +359,7 @@ class MLXSAM3(SAM3Base):
             mask = mask_array.squeeze()
             if mask.ndim == 3:
                 if mask.shape[0] > 1:
-                    mask = mask[0].astype(bool)
+                    mask = np.any(mask, axis=0).astype(bool)
                 else:
                     mask = mask[0].astype(bool) if mask.shape[0] == 1 else np.any(mask, axis=0).astype(bool)
             elif mask.ndim == 2:
@@ -447,7 +447,7 @@ class MLXSAM3(SAM3Base):
             
             if mask_array.ndim == 3:
                 if mask_array.shape[0] > 0:
-                    mask = mask_array[0].astype(bool)
+                    mask = np.any(mask_array, axis=0).astype(bool)
                 else:
                     continue
             elif mask_array.ndim == 2:
@@ -456,7 +456,7 @@ class MLXSAM3(SAM3Base):
                 mask = mask_array.squeeze()
                 if mask.ndim == 3:
                     if mask.shape[0] > 0:
-                        mask = mask[0].astype(bool)
+                        mask = np.any(mask, axis=0).astype(bool)
                     else:
                         continue
                 elif mask.ndim == 2:
