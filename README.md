@@ -26,19 +26,33 @@ docker build -t dissector:latest .
 
 ### Installation
 
-The project uses environment markers to automatically install platform-specific dependencies from a single `pyproject.toml` file:
+The project uses separate `pyproject.toml` files for different platforms:
 
+**Windows/Linux:**
 ```bash
-# Install dependencies (automatically selects based on platform)
-pip install -e .
+# Copy Windows/Linux configuration
+cp env/windows/pyproject.toml pyproject.toml
 
+# Install dependencies
+pip install -e .
 # Or using poetry
 poetry install
 ```
 
-**Automatic dependency selection:**
-- **Windows/Linux**: Automatically installs Ultralytics, PyTorch (standard version)
-- **macOS**: Automatically installs MLX, MLX-LM, PyTorch (standard version)
+**macOS:**
+```bash
+# Copy macOS configuration
+cp env/mac/pyproject.toml pyproject.toml
+
+# Install dependencies
+pip install -e .
+# Or using poetry
+poetry install
+```
+
+**Dependencies:**
+- **Windows/Linux**: Ultralytics, PyTorch 2.7.0 (CUDA 12.6 recommended)
+- **macOS**: MLX, MLX-LM, MLX SAM3 (from GitHub), PyTorch >=2.0.0
 
 ### Windows/Linux CUDA Support (Optional)
 
@@ -52,23 +66,11 @@ pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorc
 # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 ```
 
-### macOS Additional Steps
-
-MLX SAM3 is automatically installed from GitHub when using Poetry. If you're using pip, you may need to install it manually:
-
-```bash
-# Only needed if not using Poetry
-git clone https://github.com/Deekshith-Dade/mlx_sam3.git
-cd mlx_sam3
-pip install -e .
-cd ..
-```
-
 **macOS dependencies:**
-- Python 3.12+ (MLX supports 3.12+)
+- Python 3.13+ (required for MLX SAM3)
 - MLX framework (optimized for Apple Silicon)
-- MLX SAM3 (install from GitHub)
-- PyTorch (for Grounding DINO)
+- MLX SAM3 (automatically installed from GitHub via Poetry)
+- PyTorch >=2.0.0 (for Grounding DINO)
 
 **Windows/Linux dependencies:**
 - Python 3.12+

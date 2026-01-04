@@ -1,0 +1,37 @@
+[project]
+name = "dissector"
+version = "0.1.0"
+description = "Dissector - FFXIV gear segmentation (head/upper/lower/shoes/hands) - Windows/Linux"
+authors = [
+    {name = "Ricter Z",email = "ricterzheng@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[[tool.poetry.source]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+priority = "explicit"
+
+[tool.poetry]
+packages = [{include = "dissector", from = "src"}]
+
+[tool.poetry.dependencies]
+# Common dependencies
+python = ">=3.12,<3.15"
+opencv-python = ">=4.12.0.88,<5.0.0.0"
+transformers = ">=4.57.3,<5.0.0"
+psutil = ">=7.2.1,<8.0.0"
+fastapi = ">=0.115.0,<1.0.0"
+uvicorn = ">=0.32.0,<1.0.0"
+python-multipart = ">=0.0.12,<1.0.0"
+torch = "==2.7.0"
+torchvision = "==0.22.0"
+
+# Windows/Linux: Ultralytics backend
+ultralytics = ">=8.3.247,<9.0.0"
+
