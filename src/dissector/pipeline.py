@@ -522,7 +522,9 @@ def process_image(
 
     logger.info("[STEP] Stage 1: detecting shoes, head, lower_raw, upper_raw (parallel)...")
     stage1_start = time.time()
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    executor = None
+    try:
+        executor = ThreadPoolExecutor(max_workers=4)
         futures = {
             executor.submit(process_sam3, "shoes", FOOTWEAR_PROMPTS): "shoes",
             executor.submit(process_sam3, "head", HEADWEAR_PROMPTS): "head",
@@ -530,8 +532,14 @@ def process_image(
             executor.submit(process_sam3, "upper_raw", UPPER_PROMPTS): "upper_raw",
         }
         for future in as_completed(futures):
-            key, mask = future.result()
-            masks[key] = mask
+            try:
+                key, mask = future.result()
+                masks[key] = mask
+            except Exception as e:
+                logger.error(f"[PERF] Stage 1 task failed: {e}", exc_info=True)
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
     
     if sam3_model.backend_name == "mlx":
         try:
@@ -580,14 +588,22 @@ def process_image(
 
     logger.info("[STEP] Stage 2: detecting legs and hands (parallel)...")
     stage2_start = time.time()
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    executor = None
+    try:
+        executor = ThreadPoolExecutor(max_workers=2)
         futures = {
             executor.submit(process_sam3, "legs", LEG_PROMPTS): "legs",
             executor.submit(process_sam3, "hands", HAND_PROMPTS): "hands",
         }
         for future in as_completed(futures):
-            key, mask = future.result()
-            masks[key] = mask
+            try:
+                key, mask = future.result()
+                masks[key] = mask
+            except Exception as e:
+                logger.error(f"[PERF] Stage 2 task failed: {e}", exc_info=True)
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
     
     if sam3_model.backend_name == "mlx":
         try:

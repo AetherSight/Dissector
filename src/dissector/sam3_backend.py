@@ -286,6 +286,11 @@ class MLXSAM3(SAM3Base):
         
         with self._lock:
             state = self.processor.set_image(image_pil)
+            try:
+                import mlx.core as mx
+                mx.eval()
+            except ImportError:
+                pass
         
         x1, y1, x2, y2 = bbox[0]
         x1_norm, y1_norm = float(x1 / w), float(y1 / h)
@@ -301,6 +306,11 @@ class MLXSAM3(SAM3Base):
         try:
             with self._lock:
                 state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
+                try:
+                    import mlx.core as mx
+                    mx.eval()
+                except ImportError:
+                    pass
             api_method = "add_geometric_prompt"
         except Exception as e:
             logger.error(f"[MLX] add_geometric_prompt failed: {e}", exc_info=True)
@@ -346,7 +356,13 @@ class MLXSAM3(SAM3Base):
         if not masks_valid:
             if hasattr(self.model, 'o2m_mask_predict'):
                 try:
-                    result = self.model.o2m_mask_predict(state_after_box)
+                    with self._lock:
+                        result = self.model.o2m_mask_predict(state_after_box)
+                        try:
+                            import mlx.core as mx
+                            mx.eval()
+                        except ImportError:
+                            pass
                     if isinstance(result, dict):
                         masks_raw = result.get("masks", [])
                         masks = np.array(masks_raw) if hasattr(masks_raw, '__array__') else np.array(masks_raw)
@@ -359,7 +375,13 @@ class MLXSAM3(SAM3Base):
             
             if not masks_valid and hasattr(self.model, 'inst_interactive_predictor'):
                 try:
-                    result = self.model.inst_interactive_predictor(state_after_box)
+                    with self._lock:
+                        result = self.model.inst_interactive_predictor(state_after_box)
+                        try:
+                            import mlx.core as mx
+                            mx.eval()
+                        except ImportError:
+                            pass
                     if isinstance(result, dict):
                         masks_raw = result.get("masks", [])
                         masks = np.array(masks_raw) if hasattr(masks_raw, '__array__') else np.array(masks_raw)
@@ -370,7 +392,13 @@ class MLXSAM3(SAM3Base):
             if not masks_valid:
                 try:
                     if isinstance(state_after_box, dict) and 'backbone_out' in state_after_box:
-                        result = self.model()
+                        with self._lock:
+                            result = self.model()
+                            try:
+                                import mlx.core as mx
+                                mx.eval()
+                            except ImportError:
+                                pass
                         if isinstance(result, dict):
                             masks_raw = result.get("masks", [])
                             masks = np.array(masks_raw) if hasattr(masks_raw, '__array__') else np.array(masks_raw)
@@ -381,7 +409,13 @@ class MLXSAM3(SAM3Base):
             if not masks_valid and hasattr(self.processor, 'model'):
                 try:
                     if hasattr(self.processor.model, 'o2m_mask_predict'):
-                        result = self.processor.model.o2m_mask_predict(state_after_box)
+                        with self._lock:
+                            result = self.processor.model.o2m_mask_predict(state_after_box)
+                            try:
+                                import mlx.core as mx
+                                mx.eval()
+                            except ImportError:
+                                pass
                         if isinstance(result, dict):
                             masks = result.get("masks", [])
                 except Exception:
@@ -461,6 +495,11 @@ class MLXSAM3(SAM3Base):
         
         with self._lock:
             state = self.processor.set_image(image_pil)
+            try:
+                import mlx.core as mx
+                mx.eval()
+            except ImportError:
+                pass
         
         mask_total = None
         
@@ -479,6 +518,11 @@ class MLXSAM3(SAM3Base):
             try:
                 with self._lock:
                     state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
+                    try:
+                        import mlx.core as mx
+                        mx.eval()
+                    except ImportError:
+                        pass
             except Exception:
                 continue
             
