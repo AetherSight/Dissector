@@ -279,16 +279,16 @@ class MLXSAM3(SAM3Base):
         self,
         image_pil: Image.Image,
         bbox: np.ndarray,
-    ) -> np.ndarray:
-        """从边界框生成 mask（MLX 实现）"""
+    ) -> Optional[np.ndarray]:
+        """从边界框生成 mask（MLX 实现，与 Ultralytics 逻辑一致）"""
         h, w = image_pil.size[1], image_pil.size[0]
         
         with MLXSAM3._gpu_lock:
             state = self.processor.set_image(image_pil)
             try:
                 import mlx.core as mx
-                mx.eval()
-            except ImportError:
+                mx.eval(state) if isinstance(state, dict) else mx.eval()
+            except (ImportError, AttributeError):
                 pass
         
         x1, y1, x2, y2 = bbox[0]
@@ -302,139 +302,33 @@ class MLXSAM3(SAM3Base):
         
         box_list = [center_x, center_y, box_width, box_height]
         
-        try:
-            with MLXSAM3._gpu_lock:
-                state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
-                try:
-                    import mlx.core as mx
-                    mx.eval(state_after_box) if isinstance(state_after_box, dict) else mx.eval()
-                except (ImportError, AttributeError):
-                    pass
-            api_method = "add_geometric_prompt"
-        except Exception as e:
-            logger.error(f"[MLX] add_geometric_prompt failed: {e}", exc_info=True)
-            logger.warning("[MLX] Falling back to direct box assignment (masks may not be generated)")
-            if isinstance(state, dict):
-                state_after_box = state.copy()
-                state_after_box['boxes'] = np.array([[x1_norm, y1_norm, x2_norm, y2_norm]], dtype=np.float32)
-                api_method = "direct_dict"
-            else:
-                state_after_box = state
-                api_method = "direct_state"
-        
+        with MLXSAM3._gpu_lock:
+            state_after_box = self.processor.add_geometric_prompt(box_list, True, state)
+            try:
+                import mlx.core as mx
+                mx.eval(state_after_box) if isinstance(state_after_box, dict) else mx.eval()
+            except (ImportError, AttributeError):
+                pass
         
         if state_after_box is None:
-            logger.error("[MLX] All methods failed to set box prompt")
-            return np.zeros((h, w), dtype=bool)
+            return None
         
         masks = None
-        
         if isinstance(state_after_box, dict):
             masks_raw = state_after_box.get("masks", None)
-            
             if masks_raw is not None:
                 try:
                     if hasattr(masks_raw, '__array__'):
                         masks = np.array(masks_raw)
                     elif isinstance(masks_raw, (list, tuple)):
-                        masks = [np.array(m) if hasattr(m, '__array__') else m for m in masks_raw]
+                        masks = np.array([np.array(m) if hasattr(m, '__array__') else m for m in masks_raw])
                     else:
                         masks = np.array(masks_raw)
-                    
-                    mask_count = len(masks)
-                    if mask_count > 0:
-                        logger.info(f"[MLX] Generated {mask_count} mask(s)")
-                except Exception as e:
-                    logger.error(f"[MLX] Error converting masks to numpy: {e}", exc_info=True)
-                    masks = None
-            else:
-                masks = None
-        
-        masks_valid = masks is not None and len(masks) > 0
-        
-        if not masks_valid:
-            if hasattr(self.model, 'o2m_mask_predict'):
-                try:
-                    with MLXSAM3._gpu_lock:
-                        result = self.model.o2m_mask_predict(state_after_box)
-                        try:
-                            import mlx.core as mx
-                            mx.eval(result) if result is not None else mx.eval()
-                        except (ImportError, AttributeError):
-                            pass
-                    if isinstance(result, dict):
-                        masks_raw = result.get("masks", [])
-                        masks = np.array(masks_raw) if hasattr(masks_raw, '__array__') else np.array(masks_raw)
-                        masks_valid = len(masks) > 0
-                    elif result is not None:
-                        if hasattr(result, 'masks'):
-                            masks = result.masks
                 except Exception:
-                    pass
-            
-            if not masks_valid and hasattr(self.model, 'inst_interactive_predictor'):
-                try:
-                    with MLXSAM3._gpu_lock:
-                        result = self.model.inst_interactive_predictor(state_after_box)
-                        try:
-                            import mlx.core as mx
-                            mx.eval(result) if result is not None else mx.eval()
-                        except (ImportError, AttributeError):
-                            pass
-                    if isinstance(result, dict):
-                        masks_raw = result.get("masks", [])
-                        masks = np.array(masks_raw) if hasattr(masks_raw, '__array__') else np.array(masks_raw)
-                        masks_valid = len(masks) > 0
-                except Exception:
-                    pass
-            
-            if not masks_valid:
-                try:
-                    if isinstance(state_after_box, dict) and 'backbone_out' in state_after_box:
-                        with MLXSAM3._gpu_lock:
-                            result = self.model()
-                            try:
-                                import mlx.core as mx
-                                mx.eval(result) if result is not None else mx.eval()
-                            except (ImportError, AttributeError):
-                                pass
-                        if isinstance(result, dict):
-                            masks_raw = result.get("masks", [])
-                            masks = np.array(masks_raw) if hasattr(masks_raw, '__array__') else np.array(masks_raw)
-                            masks_valid = len(masks) > 0
-                except Exception:
-                    pass
-            
-            if not masks_valid and hasattr(self.processor, 'model'):
-                try:
-                    if hasattr(self.processor.model, 'o2m_mask_predict'):
-                        with MLXSAM3._gpu_lock:
-                            result = self.processor.model.o2m_mask_predict(state_after_box)
-                            try:
-                                import mlx.core as mx
-                                mx.eval(result) if result is not None else mx.eval()
-                            except (ImportError, AttributeError):
-                                pass
-                        if isinstance(result, dict):
-                            masks = result.get("masks", [])
-                except Exception:
-                    pass
+                    return None
         
-        # 如果还是没有 masks，尝试从 state_after_box 中获取
-        if masks is None:
-            if isinstance(state_after_box, dict):
-                masks_raw = state_after_box.get("masks", None)
-                if masks_raw is not None:
-                    # 转换为 numpy array
-                    masks = np.array(masks_raw) if hasattr(masks_raw, '__array__') else np.array(masks_raw)
-            else:
-                masks_raw = getattr(state_after_box, "masks", None)
-                if masks_raw is not None:
-                    masks = np.array(masks_raw) if hasattr(masks_raw, '__array__') else np.array(masks_raw)
-        
-        if masks is None or len(masks) == 0:
-            logger.warning(f"[MLX] No masks found after all attempts. State keys: {list(state_after_box.keys()) if isinstance(state_after_box, dict) else 'N/A'}")
-            return np.zeros((h, w), dtype=bool)
+        if masks is None or (hasattr(masks, '__len__') and len(masks) == 0):
+            return None
         
         if isinstance(masks, (list, tuple)):
             mask_array = np.array([np.array(m) if hasattr(m, '__array__') else m for m in masks])
@@ -442,43 +336,44 @@ class MLXSAM3(SAM3Base):
             mask_array = np.array(masks) if hasattr(masks, '__array__') else np.array(masks)
         
         if mask_array.ndim == 3:
-            scores = None
-            if isinstance(state_after_box, dict):
-                scores_raw = state_after_box.get("scores", None)
-                if scores_raw is not None:
-                    scores = np.array(scores_raw) if hasattr(scores_raw, '__array__') else np.array(scores_raw)
-            
-            if scores is not None and len(scores) == mask_array.shape[0]:
-                best_idx = np.argmax(scores)
-                mask = mask_array[best_idx]
+            if mask_array.shape[0] > 0:
+                if mask_array.shape[0] > 1:
+                    scores = None
+                    if isinstance(state_after_box, dict):
+                        scores_raw = state_after_box.get("scores", None)
+                        if scores_raw is not None:
+                            scores = np.array(scores_raw) if hasattr(scores_raw, '__array__') else np.array(scores_raw)
+                    
+                    if scores is not None and len(scores) == mask_array.shape[0]:
+                        best_idx = np.argmax(scores)
+                        mask = mask_array[best_idx].astype(bool)
+                    else:
+                        mask = mask_array[0].astype(bool)
+                else:
+                    mask = mask_array[0].astype(bool)
             else:
-                mask = np.any(mask_array, axis=0).astype(bool)
+                return None
         elif mask_array.ndim == 2:
             mask = mask_array.astype(bool)
         else:
-            while mask_array.ndim > 2:
-                mask_array = mask_array[0]
-            mask = mask_array.astype(bool)
+            mask = mask_array.squeeze()
+            if mask.ndim == 3:
+                if mask.shape[0] > 1:
+                    mask = mask[0].astype(bool)
+                else:
+                    mask = mask[0].astype(bool) if mask.shape[0] == 1 else np.any(mask, axis=0).astype(bool)
+            elif mask.ndim == 2:
+                mask = mask.astype(bool)
+            else:
+                return None
         
-        if mask.ndim == 1:
-            mask = mask.reshape((h, w))
-        
-        while mask.ndim > 2:
-            mask = mask[0]
-        
-        if mask.dtype != bool:
-            threshold = 0.5 if mask.max() <= 1.0 else 127
-            mask = mask > threshold
+        if mask.ndim != 2:
+            return None
         
         if mask.shape != (h, w):
-            mask_uint8 = (mask.astype(np.uint8) * 255) if mask.dtype == bool else mask.astype(np.uint8)
-            if mask_uint8.ndim != 2:
-                mask_uint8 = mask_uint8.squeeze()
-            mask_pil = Image.fromarray(mask_uint8, mode='L')
-            mask_pil = mask_pil.resize((w, h), Image.NEAREST)
-            mask = np.array(mask_pil) > 127
+            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
         
-        return mask.astype(bool)
+        return mask
     
     def generate_mask_from_bboxes(
         self,
@@ -551,30 +446,29 @@ class MLXSAM3(SAM3Base):
                 mask_array = np.array(masks) if hasattr(masks, '__array__') else np.array(masks)
             
             if mask_array.ndim == 3:
-                scores = None
-                if isinstance(state_after_box, dict):
-                    scores_raw = state_after_box.get("scores", None)
-                    if scores_raw is not None:
-                        scores = np.array(scores_raw) if hasattr(scores_raw, '__array__') else np.array(scores_raw)
-                
-                if scores is not None and len(scores) == mask_array.shape[0]:
-                    best_idx = np.argmax(scores)
-                    mask = mask_array[best_idx]
+                if mask_array.shape[0] > 0:
+                    mask = mask_array[0].astype(bool)
                 else:
-                    mask = np.any(mask_array, axis=0).astype(bool)
+                    continue
             elif mask_array.ndim == 2:
                 mask = mask_array.astype(bool)
             else:
-                while mask_array.ndim > 2:
-                    mask_array = mask_array[0]
-                mask = mask_array.astype(bool)
+                mask = mask_array.squeeze()
+                if mask.ndim == 3:
+                    if mask.shape[0] > 0:
+                        mask = mask[0].astype(bool)
+                    else:
+                        continue
+                elif mask.ndim == 2:
+                    mask = mask.astype(bool)
+                else:
+                    continue
             
-            if mask.ndim != 2 or mask.shape != (h, w):
+            if mask.ndim != 2:
                 continue
             
-            if mask.dtype != bool:
-                threshold = 0.5 if mask.max() <= 1.0 else 127
-                mask = mask > threshold
+            if mask.shape != (h, w):
+                mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
             
             if mask_total is None:
                 mask_total = mask.copy()
