@@ -348,7 +348,7 @@ class MLXSAM3(SAM3Base):
                         best_idx = np.argmax(scores)
                         mask = mask_array[best_idx].astype(bool)
                     else:
-                        mask = np.any(mask_array, axis=0).astype(bool)
+                        mask = mask_array[0].astype(bool)
                 else:
                     mask = mask_array[0].astype(bool)
             else:
@@ -359,7 +359,7 @@ class MLXSAM3(SAM3Base):
             mask = mask_array.squeeze()
             if mask.ndim == 3:
                 if mask.shape[0] > 1:
-                    mask = np.any(mask, axis=0).astype(bool)
+                    mask = mask[0].astype(bool)
                 else:
                     mask = mask[0].astype(bool) if mask.shape[0] == 1 else np.any(mask, axis=0).astype(bool)
             elif mask.ndim == 2:
@@ -447,7 +447,19 @@ class MLXSAM3(SAM3Base):
             
             if mask_array.ndim == 3:
                 if mask_array.shape[0] > 0:
-                    mask = np.any(mask_array, axis=0).astype(bool)
+                    if mask_array.shape[0] > 1:
+                        scores = None
+                        if isinstance(state_after_box, dict):
+                            scores_raw = state_after_box.get("scores", None)
+                            if scores_raw is not None:
+                                scores = np.array(scores_raw) if hasattr(scores_raw, '__array__') else np.array(scores_raw)
+                        if scores is not None and len(scores) == mask_array.shape[0]:
+                            best_idx = np.argmax(scores)
+                            mask = mask_array[best_idx].astype(bool)
+                        else:
+                            mask = mask_array[0].astype(bool)
+                    else:
+                        mask = mask_array[0].astype(bool)
                 else:
                     continue
             elif mask_array.ndim == 2:
@@ -456,7 +468,10 @@ class MLXSAM3(SAM3Base):
                 mask = mask_array.squeeze()
                 if mask.ndim == 3:
                     if mask.shape[0] > 0:
-                        mask = np.any(mask, axis=0).astype(bool)
+                        if mask.shape[0] > 1:
+                            mask = mask[0].astype(bool)
+                        else:
+                            mask = mask[0].astype(bool)
                     else:
                         continue
                 elif mask.ndim == 2:
