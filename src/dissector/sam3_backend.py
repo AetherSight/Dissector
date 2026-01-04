@@ -272,7 +272,7 @@ class MLXSAM3(SAM3Base):
         
         masks_valid = masks is not None and len(masks) > 0
         
-        # 如果还没有 masks，尝试调用 model 来生成
+        if not masks_valid:
         if not masks_valid:
             logger.debug("[MLX] No masks in state, attempting to generate with model...")
             
@@ -359,43 +359,39 @@ class MLXSAM3(SAM3Base):
                 if masks_raw is not None:
                     masks = np.array(masks_raw) if hasattr(masks_raw, '__array__') else np.array(masks_raw)
         
-        # 检查 masks 是否为空（masks 现在应该是 numpy array）
         if masks is None or len(masks) == 0:
             logger.warning(f"[MLX] No masks found after all attempts. State keys: {list(state_after_box.keys()) if isinstance(state_after_box, dict) else 'N/A'}")
             return np.zeros((h, w), dtype=bool)
         
-        # 转换 mask 为 numpy array
-        # masks 可能是 MLX array、numpy array 或列表
-        try:
-            if isinstance(masks, (list, tuple)):
-                # 如果是列表，取第一个
-                mask_raw = masks[0]
-            else:
-                # 如果是单个 array，直接使用
-                mask_raw = masks
-            
-            # 转换为 numpy array
-            if hasattr(mask_raw, '__array__'):
-                mask = np.array(mask_raw)
-            else:
-                mask = np.array(mask_raw)
-            
-            logger.debug(f"[MLX] Mask converted, dtype: {mask.dtype}, shape: {mask.shape}, min: {mask.min()}, max: {mask.max()}")
-        except Exception as e:
-            logger.error(f"[MLX] Error converting mask to numpy: {e}", exc_info=True)
-            return np.zeros((h, w), dtype=bool)
+        if isinstance(masks, (list, tuple)):
+            mask = masks[0]
+        else:
+            mask = masks
         
-        # 确保 mask 是布尔类型
+        if hasattr(mask, '__array__'):
+            mask = np.array(mask)
+        else:
+            mask = np.array(mask)
+        
+        while mask.ndim > 2:
+            mask = mask[0]
+        
+        if mask.ndim == 1:
+            mask = mask.reshape((h, w))
+        
+        logger.debug(f"[MLX] Mask converted, dtype: {mask.dtype}, shape: {mask.shape}, min: {mask.min()}, max: {mask.max()}")
+        
         if mask.dtype != bool:
             threshold = 0.5 if mask.max() <= 1.0 else 127
             mask = mask > threshold
             logger.debug(f"[MLX] Mask thresholded with {threshold}, new dtype: {mask.dtype}")
         
-        # 确保尺寸匹配
         if mask.shape != (h, w):
             logger.debug(f"[MLX] Resizing mask from {mask.shape} to ({h}, {w})")
             mask_uint8 = (mask.astype(np.uint8) * 255) if mask.dtype == bool else mask.astype(np.uint8)
-            mask_pil = Image.fromarray(mask_uint8)
+            if mask_uint8.ndim != 2:
+                mask_uint8 = mask_uint8.squeeze()
+            mask_pil = Image.fromarray(mask_uint8, mode='L')
             mask_pil = mask_pil.resize((w, h), Image.NEAREST)
             mask = np.array(mask_pil) > 127
         
