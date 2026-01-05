@@ -13,131 +13,20 @@ import os
 import torch
 
 from .backend import SAM3Base
+from .constants import (
+    BODY_PARTS_PROMPTS_MIX,
+    BODY_PARTS_PROMPTS_ULTRA,
+    DEFAULT_MIN_AREA_RATIO,
+    HANDS_MIN_AREA_RATIO,
+    HEAD_DILATE_KERNEL_SIZE,
+    HANDS_DILATE_KERNEL_SIZE,
+    MASK_CLOSE_KERNEL_SIZE,
+    DEFAULT_BOX_THRESHOLD,
+    DEFAULT_TEXT_THRESHOLD,
+)
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 logger = logging.getLogger(__name__)
-
-BODY_PARTS_PROMPTS_MIX = {
-    "upper": [
-        "upper body clothing",
-        "waist belt",
-        "fabric",
-        "accessory",
-        "dress",
-        "skirt",
-    ],
-    "lower_negation_for_upper": [
-        "leg",
-        "pants",
-    ],
-    "lower": [
-        "leg",
-        "pants",
-        "skirt",
-    ],
-    "shoes": [
-        "footwear",
-        "shoes",
-    ],
-    "head": [
-        "head",
-        "hair",
-        "face",
-        "head hair accessory",
-        "ear",
-        "earring",
-    ],
-    "hands": [
-        "hands",
-        "gloves",
-        "ring",
-    ],
-}
-
-BODY_PARTS_PROMPTS_ULTRA = {
-    "upper": [
-        "upper body clothing",
-        "upper garment",
-        "top",
-        "shirt",
-        "blouse",
-        "jacket",
-        "coat",
-        "sweater",
-        "cardigan",
-        "hoodie",
-        "tunic",
-        "vest",
-        "armor chest",
-        "breastplate",
-        "dress bodice",
-        "dress top",
-        "upper part of dress",
-        "sleeve",
-        "long sleeve",
-        "short sleeve",
-        "arm guard",
-        "bracer",
-        "arm band",
-        "arm accessory",
-        "garment body",
-        "clothing fabric",
-        "inner lining",
-    ],
-    "lower_negation_for_upper": [
-        "leg",
-        "pants",
-    ],
-    "lower": [
-        "pants",
-        "trousers",
-        "jeans",
-        "slacks",
-        "shorts",
-        "leggings",
-        "tights",
-        "pant legs",
-        "trouser legs",
-        "pant waist",
-    ],
-    "shoes": [
-        "shoe",
-        "shoes",
-        "boot",
-        "boots",
-        "sandal",
-        "sneaker",
-        "high heel",
-        "flat shoe",
-    ],
-    "head": [
-        "head",
-        "human head",
-        "face",
-        "facial area",
-        "hair",
-        "hairstyle",
-        "ponytail hair",
-        "cat ear",
-        "animal ear",
-        "headwear",
-        "hat",
-        "cap",
-        "helmet",
-        "crown",
-        "tiara",
-        "headband",
-        "hood",
-    ],
-    "hands": [
-        "human hand",
-        "hands",
-        "palm",
-        "fingers",
-        "bare hand",
-        "bare fingers",
-    ],
-}
 
 def white_bg(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
     if np.sum(mask) == 0:
@@ -171,7 +60,7 @@ def encode_image(img_bgr: np.ndarray, ext: str = ".jpg") -> str:
         return ""
     return base64.b64encode(buf.tobytes()).decode("utf-8")
 
-def clean_mask(mask: np.ndarray, min_area_ratio: float = 0.001) -> np.ndarray:
+def clean_mask(mask: np.ndarray, min_area_ratio: float = DEFAULT_MIN_AREA_RATIO) -> np.ndarray:
     if mask.dtype != np.uint8:
         mask_uint8 = mask.astype(np.uint8)
     else:
@@ -193,7 +82,7 @@ def mask_from_boxes(
     image_pil: Image.Image,
     boxes: np.ndarray,
     sam3_model: SAM3Base,
-    min_area_ratio: float = 0.001,
+    min_area_ratio: float = DEFAULT_MIN_AREA_RATIO,
     save_debug: bool = False,
     debug_prefix: str = "",
     debug_dir: str = "",
@@ -224,7 +113,7 @@ def mask_from_boxes(
         try:
             mask_total = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
             if mask_total is not None and mask_total.ndim == 2 and mask_total.shape == (h, w):
-                kernel = np.ones((3, 3), np.uint8)
+                kernel = np.ones((MASK_CLOSE_KERNEL_SIZE, MASK_CLOSE_KERNEL_SIZE), np.uint8)
                 mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
                 mask_total = clean_mask(mask_total, min_area_ratio=min_area_ratio)
                 return mask_total
@@ -287,8 +176,8 @@ def segment_parts_mlx(
     processor=None,
     dino_model=None,
     device: Optional[torch.device] = None,
-    box_threshold: float = 0.3,
-    text_threshold: float = 0.25,
+    box_threshold: float = DEFAULT_BOX_THRESHOLD,
+    text_threshold: float = DEFAULT_TEXT_THRESHOLD,
 ) -> Dict[str, str]:
     image_rgb = np.array(image_pil)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
@@ -407,20 +296,20 @@ def segment_parts_mlx(
             upper_from_subtraction = upper_from_subtraction & (~masks_dict[part_name])
     
     upper_mask = upper_detected_cleaned | upper_from_subtraction
-    upper_mask = clean_mask(upper_mask, min_area_ratio=0.001)
+    upper_mask = clean_mask(upper_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks_dict["upper"] = upper_mask
     
     if "lower" in masks_dict:
         lower_mask = masks_dict["lower"].copy()
         if "shoes" in masks_dict:
             lower_mask = lower_mask & (~masks_dict["shoes"])
-        lower_mask = clean_mask(lower_mask, min_area_ratio=0.001)
+        lower_mask = clean_mask(lower_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
         masks_dict["lower"] = lower_mask
     
     for part_name in prompts_dict.keys():
         mask = masks_dict.get(part_name, np.zeros((h, w), dtype=bool))
         if part_name not in ["upper", "lower"]:
-            mask = clean_mask(mask, min_area_ratio=0.001)
+            mask = clean_mask(mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
         cropped_img = white_bg(image_bgr, mask)
         results[part_name] = encode_image(cropped_img, ext=".jpg")
     
@@ -474,13 +363,13 @@ def segment_parts_ultralytics(
     detect_and_store("lower_raw", get_prompts_for_backend(backend_name, "lower"))
     lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
-    masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
+    masks["lower"] = clean_mask(lower_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
 
     logger.debug("[STEP] detecting head (for removal) ...")
     detect_and_store("head", get_prompts_for_backend(backend_name, "head"))
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
     if np.any(head_mask):
-        kernel = np.ones((15, 15), np.uint8)
+        kernel = np.ones((HEAD_DILATE_KERNEL_SIZE, HEAD_DILATE_KERNEL_SIZE), np.uint8)
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["head"] = head_mask
 
@@ -493,21 +382,21 @@ def segment_parts_ultralytics(
         & (~masks.get("shoes", np.zeros_like(upper_mask)))
         & (~masks.get("head", np.zeros_like(upper_mask)))
     )
-    upper_mask = clean_mask(upper_mask, min_area_ratio=0.001)
+    upper_mask = clean_mask(upper_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks["upper"] = upper_mask
-    masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
+    masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=DEFAULT_MIN_AREA_RATIO)
 
     logger.debug("[STEP] detecting hands (remove from upper)...")
     detect_and_store("hands", get_prompts_for_backend(backend_name, "hands"))
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
-    hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
+    hand_mask = clean_mask(hand_mask, min_area_ratio=HANDS_MIN_AREA_RATIO)
     if np.any(hand_mask):
-        kernel = np.ones((5, 5), np.uint8)
+        kernel = np.ones((HANDS_DILATE_KERNEL_SIZE, HANDS_DILATE_KERNEL_SIZE), np.uint8)
         hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["hands"] = hand_mask
 
     masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
-    masks["upper"] = clean_mask(masks["upper"], min_area_ratio=0.001)
+    masks["upper"] = clean_mask(masks["upper"], min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     results: Dict[str, str] = {}
     outputs = [
         ("upper", "upper"),
@@ -529,8 +418,8 @@ def segment_parts(
     processor=None,
     dino_model=None,
     device: Optional[torch.device] = None,
-    box_threshold: float = 0.3,
-    text_threshold: float = 0.25,
+    box_threshold: float = DEFAULT_BOX_THRESHOLD,
+    text_threshold: float = DEFAULT_TEXT_THRESHOLD,
 ) -> Dict[str, str]:
     """统一的分割入口，根据后端类型调用相应的实现"""
     if sam3_model.backend_name == "mlx":
