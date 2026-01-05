@@ -10,6 +10,7 @@ from PIL import Image
 from typing import Dict, Optional, List, Tuple
 import base64
 import torch
+import os
 
 from .backend import SAM3Base
 
@@ -25,58 +26,37 @@ def estimate_tokens(text: str) -> int:
 BODY_PARTS_PROMPTS_CORE = {
     "upper": [
         "upper body clothing",
-        "shirt",
-        "jacket",
-        "coat",
-        "sweater",
-        "sleeve",
-        "scarf",
-        "necklace",
-        "arm guard",
-        "bracer",
-        "belt",
-        "waistband",
         "waist belt",
-        "belt buckle",
-        "bag",
-        "pouch",
-        "hem",
-        "edge of clothing",
-        "attached accessory",
-        "waist accessory",
+        "fabric",
+        "accessory",
+        "dress",
+        "skirt",
+    ],
+    "lower_negation_for_upper": [
+        "leg",
+        "pants",
     ],
     "lower": [
+        "leg",
         "pants",
-        "trousers",
-        "jeans",
-        "shorts",
-        "leggings",
+        "skirt",
     ],
     "shoes": [
+        "footwear",
         "shoes",
-        "boot",
-        "boots",
-        "sandal",
     ],
     "head": [
         "head",
-        "human head",
         "hair",
-        "hairstyle",
         "face",
-        "facial features",
-        "headwear",
-        "hat",
-        "cap",
-        "helmet",
+        "head hair accessory",
         "ear",
         "earring",
     ],
     "hands": [
         "hands",
-        "human hand",
-        "fingers",
-        "bare hand",
+        "gloves",
+        "ring",
     ],
 }
 
@@ -129,6 +109,10 @@ BODY_PARTS_PROMPTS_FULL = {
         "garment body",
         "clothing fabric",
         "inner lining",
+    ],
+    "lower_negation_for_upper": [
+        "leg",
+        "pants",
     ],
     "lower": [
         "pants",
@@ -327,6 +311,11 @@ def segment_parts(
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     h, w = image_rgb.shape[:2]
     
+    debug_upper_dir = os.path.join("tmp", "debug_upper")
+    debug_head_dir = os.path.join("tmp", "debug_head")
+    os.makedirs(debug_upper_dir, exist_ok=True)
+    os.makedirs(debug_head_dir, exist_ok=True)
+    
     results: Dict[str, str] = {}
     
     use_dino = sam3_model.backend_name == "ultralytics" and processor is not None and dino_model is not None
@@ -338,7 +327,12 @@ def segment_parts(
     
     masks_dict: Dict[str, np.ndarray] = {}
     
+    other_parts = ["lower", "shoes", "head", "hands"]
+    other_parts_for_upper_negation = ["lower_negation_for_upper", "shoes", "head", "hands"]
+    
     for part_name, prompts in prompts_dict.items():
+        if part_name == "lower_negation_for_upper":
+            continue
         try:
             logger.info(f"Segmenting {part_name}...")
             
@@ -360,6 +354,33 @@ def segment_parts(
                         if prompt_mask is not None and prompt_mask.size > 0:
                             mask_pixels = np.sum(prompt_mask)
                             if mask_pixels > 0:
+                                if part_name == "upper":
+                                    prompt_mask_vis = (prompt_mask.astype(np.uint8) * 255)
+                                    prompt_overlay = image_bgr.copy()
+                                    prompt_overlay[prompt_mask] = prompt_overlay[prompt_mask] * 0.5 + np.array([0, 255, 0], dtype=np.uint8) * 0.5
+                                    safe_prompt = prompt.replace(" ", "_").replace("/", "_")[:50]
+                                    cv2.imwrite(
+                                        os.path.join(debug_upper_dir, f"upper_prompt_{i+1:02d}_{safe_prompt}_mask.png"),
+                                        prompt_mask_vis
+                                    )
+                                    cv2.imwrite(
+                                        os.path.join(debug_upper_dir, f"upper_prompt_{i+1:02d}_{safe_prompt}_overlay.jpg"),
+                                        prompt_overlay
+                                    )
+                                elif part_name == "head":
+                                    prompt_mask_vis = (prompt_mask.astype(np.uint8) * 255)
+                                    prompt_overlay = image_bgr.copy()
+                                    prompt_overlay[prompt_mask] = prompt_overlay[prompt_mask] * 0.5 + np.array([255, 0, 255], dtype=np.uint8) * 0.5
+                                    safe_prompt = prompt.replace(" ", "_").replace("/", "_")[:50]
+                                    cv2.imwrite(
+                                        os.path.join(debug_head_dir, f"head_prompt_{i+1:02d}_{safe_prompt}_mask.png"),
+                                        prompt_mask_vis
+                                    )
+                                    cv2.imwrite(
+                                        os.path.join(debug_head_dir, f"head_prompt_{i+1:02d}_{safe_prompt}_overlay.jpg"),
+                                        prompt_overlay
+                                    )
+                                
                                 if mask_total is None:
                                     mask_total = prompt_mask.copy()
                                 else:
@@ -437,42 +458,162 @@ def segment_parts(
             logger.error(f"Error segmenting {part_name}: {e}", exc_info=True)
             masks_dict[part_name] = np.zeros((h, w), dtype=bool)
     
-    if "upper" in masks_dict:
-        upper_mask = masks_dict["upper"].copy()
-        if "head" in masks_dict:
-            upper_mask = upper_mask & (~masks_dict["head"])
-        if "shoes" in masks_dict:
-            upper_mask = upper_mask & (~masks_dict["shoes"])
-        masks_dict["upper"] = upper_mask
+    if "lower_negation_for_upper" in prompts_dict:
+        logger.info("Detecting lower_negation_for_upper for upper mask calculation...")
+        lower_negation_prompts = prompts_dict["lower_negation_for_upper"]
+        lower_negation_mask = None
+        
+        if sam3_model.backend_name == "mlx":
+            lower_negation_mask_total = None
+            for prompt in lower_negation_prompts:
+                try:
+                    prompt_mask = sam3_model.generate_mask_from_text_prompt(
+                        image_pil=image_pil,
+                        text_prompt=prompt,
+                    )
+                    if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
+                        if lower_negation_mask_total is None:
+                            lower_negation_mask_total = prompt_mask.copy()
+                        else:
+                            lower_negation_mask_total |= prompt_mask
+                except Exception as e:
+                    logger.warning(f"Error detecting lower_negation_for_upper with prompt '{prompt}': {e}")
+                    continue
+            lower_negation_mask = lower_negation_mask_total
+        else:
+            if use_dino:
+                boxes = dino_detect(
+                    image_pil=image_pil,
+                    prompts=lower_negation_prompts,
+                    processor=processor,
+                    dino_model=dino_model,
+                    device=device,
+                    box_threshold=box_threshold,
+                    text_threshold=text_threshold,
+                )
+                if boxes.size > 0:
+                    lower_negation_mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
+        
+        if lower_negation_mask is None or lower_negation_mask.size == 0:
+            lower_mask = masks_dict.get("lower", np.zeros((h, w), dtype=bool))
+            lower_negation_mask = lower_mask.copy()
+        else:
+            if lower_negation_mask.shape != (h, w):
+                mask_uint8 = (lower_negation_mask.astype(np.uint8) * 255) if lower_negation_mask.dtype == bool else lower_negation_mask.astype(np.uint8)
+                lower_negation_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+        
+        masks_dict["lower_negation_for_upper"] = lower_negation_mask
+    else:
+        masks_dict["lower_negation_for_upper"] = masks_dict.get("lower", np.zeros((h, w), dtype=bool))
+    
+    logger.info("Detecting person/human body as a whole...")
+    person_prompts = ["person", "full body", "outfit", "garment"]
+    person_mask = None
+    
+    if sam3_model.backend_name == "mlx":
+        person_mask_total = None
+        for prompt in person_prompts:
+            try:
+                prompt_mask = sam3_model.generate_mask_from_text_prompt(
+                    image_pil=image_pil,
+                    text_prompt=prompt,
+                )
+                if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
+                    if person_mask_total is None:
+                        person_mask_total = prompt_mask.copy()
+                    else:
+                        person_mask_total |= prompt_mask
+            except Exception as e:
+                logger.warning(f"Error detecting person with prompt '{prompt}': {e}")
+                continue
+        person_mask = person_mask_total
+    else:
+        if use_dino:
+            boxes = dino_detect(
+                image_pil=image_pil,
+                prompts=person_prompts,
+                processor=processor,
+                dino_model=dino_model,
+                device=device,
+                box_threshold=box_threshold,
+                text_threshold=text_threshold,
+            )
+            if boxes.size > 0:
+                person_mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
+    
+    if person_mask is None or person_mask.size == 0 or np.sum(person_mask) == 0:
+        logger.warning("Failed to detect person body, using fallback: all detected parts combined")
+        person_mask = np.zeros((h, w), dtype=bool)
+        for part_name in other_parts:
+            if part_name in masks_dict:
+                person_mask |= masks_dict[part_name]
+    else:
+        if person_mask.shape != (h, w):
+            mask_uint8 = (person_mask.astype(np.uint8) * 255) if person_mask.dtype == bool else person_mask.astype(np.uint8)
+            person_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+    
+    logger.info("Computing upper mask: cleaning detected upper, then merging with person body minus other parts...")
+    upper_detected = masks_dict.get("upper", np.zeros((h, w), dtype=bool))
+    
+    lower_negation_mask = masks_dict.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
+    
+    upper_detected_cleaned = upper_detected.copy()
+    upper_detected_cleaned = upper_detected_cleaned & (~lower_negation_mask)
+    for part_name in ["shoes", "head", "hands"]:
+        if part_name in masks_dict:
+            upper_detected_cleaned = upper_detected_cleaned & (~masks_dict[part_name])
+    
+    upper_from_subtraction = person_mask.copy()
+    upper_from_subtraction = upper_from_subtraction & (~lower_negation_mask)
+    for part_name in ["shoes", "head", "hands"]:
+        if part_name in masks_dict:
+            upper_from_subtraction = upper_from_subtraction & (~masks_dict[part_name])
+    
+    upper_mask = upper_detected_cleaned | upper_from_subtraction
+    upper_mask = clean_mask(upper_mask, min_area_ratio=0.001)
+    masks_dict["upper"] = upper_mask
+    
+    upper_detected_vis = (upper_detected.astype(np.uint8) * 255)
+    upper_detected_overlay = image_bgr.copy()
+    upper_detected_overlay[upper_detected] = upper_detected_overlay[upper_detected] * 0.5 + np.array([0, 255, 0], dtype=np.uint8) * 0.5
+    cv2.imwrite(os.path.join(debug_upper_dir, "upper_detected_mask.png"), upper_detected_vis)
+    cv2.imwrite(os.path.join(debug_upper_dir, "upper_detected_overlay.jpg"), upper_detected_overlay)
+    
+    upper_detected_cleaned_vis = (upper_detected_cleaned.astype(np.uint8) * 255)
+    upper_detected_cleaned_overlay = image_bgr.copy()
+    upper_detected_cleaned_overlay[upper_detected_cleaned] = upper_detected_cleaned_overlay[upper_detected_cleaned] * 0.5 + np.array([0, 255, 255], dtype=np.uint8) * 0.5
+    cv2.imwrite(os.path.join(debug_upper_dir, "upper_detected_cleaned_mask.png"), upper_detected_cleaned_vis)
+    cv2.imwrite(os.path.join(debug_upper_dir, "upper_detected_cleaned_overlay.jpg"), upper_detected_cleaned_overlay)
+    
+    upper_subtraction_vis = (upper_from_subtraction.astype(np.uint8) * 255)
+    upper_subtraction_overlay = image_bgr.copy()
+    upper_subtraction_overlay[upper_from_subtraction] = upper_subtraction_overlay[upper_from_subtraction] * 0.5 + np.array([255, 0, 0], dtype=np.uint8) * 0.5
+    cv2.imwrite(os.path.join(debug_upper_dir, "upper_subtraction_mask.png"), upper_subtraction_vis)
+    cv2.imwrite(os.path.join(debug_upper_dir, "upper_subtraction_overlay.jpg"), upper_subtraction_overlay)
+    
+    upper_mask_vis = (upper_mask.astype(np.uint8) * 255)
+    upper_overlay = image_bgr.copy()
+    upper_overlay[upper_mask] = upper_overlay[upper_mask] * 0.5 + np.array([0, 255, 0], dtype=np.uint8) * 0.5
+    cv2.imwrite(os.path.join(debug_upper_dir, "upper_final_mask.png"), upper_mask_vis)
+    cv2.imwrite(os.path.join(debug_upper_dir, "upper_final_overlay.jpg"), upper_overlay)
+    
+    person_mask_vis = (person_mask.astype(np.uint8) * 255)
+    person_overlay = image_bgr.copy()
+    person_overlay[person_mask] = person_overlay[person_mask] * 0.5 + np.array([255, 255, 0], dtype=np.uint8) * 0.5
+    cv2.imwrite(os.path.join(debug_upper_dir, "person_body_mask.png"), person_mask_vis)
+    cv2.imwrite(os.path.join(debug_upper_dir, "person_body_overlay.jpg"), person_overlay)
     
     if "lower" in masks_dict:
         lower_mask = masks_dict["lower"].copy()
         if "shoes" in masks_dict:
             lower_mask = lower_mask & (~masks_dict["shoes"])
+        lower_mask = clean_mask(lower_mask, min_area_ratio=0.001)
         masks_dict["lower"] = lower_mask
-    
-    if "upper" in masks_dict and "lower" in masks_dict:
-        upper_mask = masks_dict["upper"]
-        lower_mask = masks_dict["lower"]
-        overlap = upper_mask & lower_mask
-        if np.any(overlap):
-            upper_area = np.sum(upper_mask)
-            overlap_area = np.sum(overlap)
-            overlap_ratio = overlap_area / max(upper_area, 1)
-            
-            if overlap_ratio > 0.1:
-                upper_mask = upper_mask | overlap
-                lower_mask = lower_mask & (~overlap)
-                masks_dict["upper"] = upper_mask
-                masks_dict["lower"] = lower_mask
-            else:
-                upper_mask = upper_mask & (~overlap)
-                lower_mask = lower_mask | overlap
-                masks_dict["upper"] = upper_mask
-                masks_dict["lower"] = lower_mask
     
     for part_name in prompts_dict.keys():
         mask = masks_dict.get(part_name, np.zeros((h, w), dtype=bool))
+        if part_name not in ["upper", "lower"]:
+            mask = clean_mask(mask, min_area_ratio=0.001)
         cropped_img = white_bg(image_bgr, mask)
         results[part_name] = encode_image(cropped_img, ext=".jpg")
         logger.info(f"Successfully segmented {part_name}")
