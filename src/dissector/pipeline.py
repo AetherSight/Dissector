@@ -246,13 +246,14 @@ def white_bg(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
     x0 = max(0, x0 - pad)
     x1 = min(mask.shape[1] - 1, x1 + pad)
 
-    img_crop = image_bgr[y0 : y1 + 1, x0 : x1 + 1]
+    img_crop = image_bgr[y0 : y1 + 1, x0 : x1 + 1].copy()  # 确保使用副本
     mask_crop = mask_uint8[y0 : y1 + 1, x0 : x1 + 1]
 
     fg = cv2.bitwise_and(img_crop, img_crop, mask=mask_crop)
     white = np.full_like(img_crop, 255, dtype=np.uint8)
     bg = cv2.bitwise_and(white, white, mask=cv2.bitwise_not(mask_crop))
-    return cv2.add(fg, bg)
+    result = cv2.add(fg, bg)
+    return result.copy()  # 确保返回副本
 
 
 def encode_image(img_bgr: np.ndarray, ext: str = ".jpg") -> str:
@@ -515,7 +516,10 @@ def process_image(
         mask_part = masks.get(key, np.zeros((h, w), dtype=bool)).copy()  # 确保使用副本
         logger.info(f"[DEBUG] Output {name}: key={key}, mask sum={np.sum(mask_part)}")
         out_img = white_bg(image_bgr, mask_part)
-        results[name] = encode_image(out_img, ext=".jpg")
+        logger.info(f"[DEBUG] Output {name}: out_img shape={out_img.shape}, dtype={out_img.dtype}, sum={np.sum(out_img)}")
+        encoded = encode_image(out_img, ext=".jpg")
+        logger.info(f"[DEBUG] Output {name}: encoded length={len(encoded)}, first 50 chars={encoded[:50] if len(encoded) > 50 else encoded}")
+        results[name] = encoded
     encode_time = time.time() - step_start
     
     total_time = time.time() - start_time
