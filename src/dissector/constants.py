@@ -36,6 +36,7 @@ BODY_PARTS_PROMPTS_MIX = {
         "head hair accessory",
         "ear",
         "earring",
+        "hood",
     ],
     "hands": [
         "hands",
