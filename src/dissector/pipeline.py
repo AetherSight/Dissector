@@ -412,6 +412,179 @@ def process_image_simple(
     )
 
 
+def process_image_old(
+    image_path: str,
+    processor: AutoProcessor,
+    dino_model: AutoModelForZeroShotObjectDetection,
+    sam3_model: SAM3Base,
+    device: torch.device,
+    box_threshold: float,
+    text_threshold: float,
+) -> Dict[str, str]:
+    image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    if image_bgr is None:
+        print(f"[WARN] cannot read image: {image_path}")
+        return
+    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    image_pil = Image.fromarray(image_rgb)
+    h, w = image_rgb.shape[:2]
+
+    masks: Dict[str, np.ndarray] = {}
+
+    def detect_and_store(key: str, prompts: List[str]):
+        dino_res = run_grounding_dino(
+            image_pil=image_pil,
+            prompts=prompts,
+            processor=processor,
+            dino_model=dino_model,
+            device=device,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+        )
+        boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
+        masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
+
+    # 使用原本的提示词定义
+    FOOTWEAR_PROMPTS: List[str] = [
+        "shoe",
+        "shoes",
+        "boot",
+        "boots",
+        "sandal",
+        "sneaker",
+        "high heel",
+        "flat shoe",
+    ]
+    
+    LOWER_PROMPTS: List[str] = [
+        "pants",
+        "trousers",
+        "jeans",
+        "slacks",
+        "shorts",
+        "leggings",
+        "tights",
+        "pant legs",
+        "trouser legs",
+        "pant waist",
+    ]
+    
+    HEADWEAR_PROMPTS: List[str] = [
+        "head",
+        "human head",
+        "face",
+        "facial area",
+        "hair",
+        "hairstyle",
+        "ponytail hair",
+        "cat ear",
+        "animal ear",
+        "headwear",
+        "hat",
+        "cap",
+        "helmet",
+        "crown",
+        "tiara",
+        "headband",
+        "hood",
+    ]
+    
+    UPPER_PROMPTS: List[str] = [
+        "upper body clothing",
+        "upper garment",
+        "top",
+        "shirt",
+        "blouse",
+        "jacket",
+        "coat",
+        "sweater",
+        "cardigan",
+        "hoodie",
+        "tunic",
+        "vest",
+        "armor chest",
+        "breastplate",
+        "dress bodice",
+        "dress top",
+        "upper part of dress",
+        "sleeve",
+        "long sleeve",
+        "short sleeve",
+        "arm guard",
+        "bracer",
+        "arm band",
+        "arm accessory",
+        "garment body",
+        "clothing fabric",
+        "inner lining",
+    ]
+    
+    HAND_PROMPTS: List[str] = [
+        "human hand",
+        "hands",
+        "palm",
+        "fingers",
+        "bare hand",
+        "bare fingers",
+    ]
+
+    logger.debug("[STEP] detecting shoes ...")
+    detect_and_store("shoes", FOOTWEAR_PROMPTS)
+
+    logger.debug("[STEP] detecting lower ...")
+    detect_and_store("lower_raw", LOWER_PROMPTS)
+    lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
+    lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
+    masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
+
+    logger.debug("[STEP] detecting head (for removal) ...")
+    detect_and_store("head", HEADWEAR_PROMPTS)
+    head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
+    if np.any(head_mask):
+        kernel = np.ones((15, 15), np.uint8)
+        head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+    masks["head"] = head_mask
+
+    logger.debug("[STEP] detecting upper ...")
+    detect_and_store("upper_raw", UPPER_PROMPTS)
+    upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
+    upper_mask = (
+        upper_mask
+        & (~masks.get("lower", np.zeros_like(upper_mask)))
+        & (~masks.get("shoes", np.zeros_like(upper_mask)))
+        & (~masks.get("head", np.zeros_like(upper_mask)))
+    )
+    upper_mask = clean_mask(upper_mask, min_area_ratio=0.001)
+    masks["upper"] = upper_mask
+    masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
+
+    logger.debug("[STEP] detecting hands (remove from upper)...")
+    detect_and_store("hands", HAND_PROMPTS)
+    hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
+    hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
+    if np.any(hand_mask):
+        kernel = np.ones((5, 5), np.uint8)
+        hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+    masks["hands"] = hand_mask
+
+    masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
+    masks["upper"] = clean_mask(masks["upper"], min_area_ratio=0.001)
+    results: Dict[str, str] = {}
+    outputs = [
+        ("upper", "upper"),
+        ("lower", "lower"),
+        ("shoes", "shoes"),
+        ("head", "head"),
+        ("hands", "hands"),
+    ]
+    for key, name in outputs:
+        mask_part = masks.get(key, np.zeros((h, w), dtype=bool))
+        out_img = white_bg(image_bgr, mask_part)
+        results[name] = encode_image(out_img, ext=".jpg")
+    return results
+
+
+
 def process_image(
     image_path: str,
     processor: AutoProcessor,
@@ -446,7 +619,17 @@ def process_image(
         logger.info(f"[PERF] MLX segment_parts: {segment_time:.2f}s")
         return results
 
-    masks: Dict[str, np.ndarray] = {}
+    # Ultralytics 后端使用 process_image_old
+    logger.info("[PERF] Ultralytics backend: using process_image_old")
+    return process_image_old(
+        image_path=image_path,
+        processor=processor,
+        dino_model=dino_model,
+        sam3_model=sam3_model,
+        device=device,
+        box_threshold=box_threshold,
+        text_threshold=text_threshold,
+    )
 
     # 创建 tmp 目录用于保存中间 mask
     tmp_dir = os.path.join(os.path.dirname(image_path), "tmp")
