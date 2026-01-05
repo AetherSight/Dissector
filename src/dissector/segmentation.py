@@ -288,8 +288,12 @@ def segment_parts_mlx(
     lower_negation_mask = masks_dict.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
     lower_mask_for_upper = masks_dict.get("lower", np.zeros((h, w), dtype=bool))
     
-    # upper: 正常流程得到的 upper，不和 lower_negation_for_upper 取反（使用原始检测结果）
+    # upper: 正常流程得到的 upper，不和 lower_negation_for_upper 取反，但要和头、手、鞋取反
     upper_original = upper_detected.copy()
+    # 排除 shoes, head, hands
+    for part_name in ["shoes", "head", "hands"]:
+        if part_name in masks_dict:
+            upper_original = upper_original & (~masks_dict[part_name])
     if upper_original.shape != (h, w):
         mask_uint8 = (upper_original.astype(np.uint8) * 255) if upper_original.dtype == bool else upper_original.astype(np.uint8)
         upper_original = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
