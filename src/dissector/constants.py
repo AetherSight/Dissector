@@ -73,10 +73,6 @@ BODY_PARTS_PROMPTS_ULTRA = {
         "clothing fabric",
         "inner lining",
     ],
-    "lower_negation_for_upper": [
-        "leg",
-        "pants",
-    ],
     "lower": [
         "pants",
         "trousers",
