@@ -397,7 +397,7 @@ def process_image_simple(
     )
 
 
-def process_image_old(
+def process_image_ultralytics(
     image_path: str,
     processor: AutoProcessor,
     dino_model: AutoModelForZeroShotObjectDetection,
@@ -429,89 +429,13 @@ def process_image_old(
         boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
         masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
 
-    # 使用原本的提示词定义
-    FOOTWEAR_PROMPTS: List[str] = [
-        "shoe",
-        "shoes",
-        "boot",
-        "boots",
-        "sandal",
-        "sneaker",
-        "high heel",
-        "flat shoe",
-    ]
-    
-    LOWER_PROMPTS: List[str] = [
-        "pants",
-        "trousers",
-        "jeans",
-        "slacks",
-        "shorts",
-        "leggings",
-        "tights",
-        "pant legs",
-        "trouser legs",
-        "pant waist",
-    ]
-    
-    HEADWEAR_PROMPTS: List[str] = [
-        "head",
-        "human head",
-        "face",
-        "facial area",
-        "hair",
-        "hairstyle",
-        "ponytail hair",
-        "cat ear",
-        "animal ear",
-        "headwear",
-        "hat",
-        "cap",
-        "helmet",
-        "crown",
-        "tiara",
-        "headband",
-        "hood",
-    ]
-    
-    UPPER_PROMPTS: List[str] = [
-        "upper body clothing",
-        "upper garment",
-        "top",
-        "shirt",
-        "blouse",
-        "jacket",
-        "coat",
-        "sweater",
-        "cardigan",
-        "hoodie",
-        "tunic",
-        "vest",
-        "armor chest",
-        "breastplate",
-        "dress bodice",
-        "dress top",
-        "upper part of dress",
-        "sleeve",
-        "long sleeve",
-        "short sleeve",
-        "arm guard",
-        "bracer",
-        "arm band",
-        "arm accessory",
-        "garment body",
-        "clothing fabric",
-        "inner lining",
-    ]
-    
-    HAND_PROMPTS: List[str] = [
-        "human hand",
-        "hands",
-        "palm",
-        "fingers",
-        "bare hand",
-        "bare fingers",
-    ]
+    # 从函数获取提示词
+    backend_name = sam3_model.backend_name
+    FOOTWEAR_PROMPTS = get_prompts_for_backend(backend_name, "shoes")
+    LOWER_PROMPTS = get_prompts_for_backend(backend_name, "lower")
+    HEADWEAR_PROMPTS = get_prompts_for_backend(backend_name, "head")
+    UPPER_PROMPTS = get_prompts_for_backend(backend_name, "upper")
+    HAND_PROMPTS = get_prompts_for_backend(backend_name, "hands")
 
     logger.debug("[STEP] detecting shoes ...")
     detect_and_store("shoes", FOOTWEAR_PROMPTS)
@@ -604,9 +528,9 @@ def process_image(
         logger.info(f"[PERF] MLX segment_parts: {segment_time:.2f}s")
         return results
 
-    # Ultralytics 后端使用 process_image_old
-    logger.info("[PERF] Ultralytics backend: using process_image_old")
-    return process_image_old(
+    # Ultralytics 后端使用 process_image_ultralytics
+    logger.info("[PERF] Ultralytics backend: using process_image_ultralytics")
+    return process_image_ultralytics(
         image_path=image_path,
         processor=processor,
         dino_model=dino_model,
