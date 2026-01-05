@@ -3,8 +3,7 @@ import base64
 import logging
 import platform
 import time
-import threading
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -23,11 +22,7 @@ from PIL import Image
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 from .backend import SAM3Factory, SAM3Base
-from .segmentation import (
-    segment_parts,
-    BODY_PARTS_PROMPTS_MIX,
-    BODY_PARTS_PROMPTS_ULTRA,
-)
+from .segmentation import segment_parts
 
 
 def get_device() -> torch.device:
