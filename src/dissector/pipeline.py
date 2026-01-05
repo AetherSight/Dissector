@@ -505,7 +505,15 @@ def process_image(
     masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
     logger.info("[STEP] detecting hands (remove from upper)...")
-    HAND_PROMPTS = get_prompts_for_backend(backend_name, "hands")
+    # 使用原本的 HAND_PROMPTS，顺序和内容必须与原本代码完全一致
+    HAND_PROMPTS: List[str] = [
+        "human hand",
+        "hands",
+        "palm",
+        "fingers",
+        "bare hand",
+        "bare fingers",
+    ]
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
