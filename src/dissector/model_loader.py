@@ -6,7 +6,7 @@ Windows/Linux: Ultralytics SAM
 import os
 import platform
 import logging
-from typing import Union, Tuple, Any
+from typing import Tuple, Any
 from PIL import Image
 import numpy as np
 
@@ -15,9 +15,11 @@ logger = logging.getLogger(__name__)
 # Type hints for model objects
 SAM3Model = Any
 
+
 def is_mac() -> bool:
     """Check if running on macOS."""
     return platform.system() == "Darwin"
+
 
 def load_sam3_model() -> Tuple[SAM3Model, str]:
     """
@@ -30,6 +32,7 @@ def load_sam3_model() -> Tuple[SAM3Model, str]:
         return _load_mlx_sam3(), "mlx"
     else:
         return _load_ultralytics_sam3(), "ultralytics"
+
 
 def _load_mlx_sam3() -> SAM3Model:
     """
@@ -148,6 +151,7 @@ def _load_mlx_sam3() -> SAM3Model:
         logger.error(f"Failed to import MLX SAM3: {e}")
         raise RuntimeError("MLX SAM3 is required on macOS. Install with: pip install mlx-sam3") from e
 
+
 def _load_ultralytics_sam3() -> SAM3Model:
     """Load Ultralytics SAM3 model for Windows/Linux."""
     from ultralytics import SAM
@@ -198,6 +202,7 @@ def _load_ultralytics_sam3() -> SAM3Model:
     checkpoint_path = find_sam3_checkpoint()
     logger.info(f"Loading Ultralytics SAM3 model from: {checkpoint_path}")
     return SAM(checkpoint_path)
+
 
 def generate_mask_from_bbox(
     sam3_model: SAM3Model,
