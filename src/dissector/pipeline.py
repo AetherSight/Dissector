@@ -430,7 +430,7 @@ def process_image(
     masks: Dict[str, np.ndarray] = {}
 
     def detect_and_store(key: str, prompts: List[str]):
-        step_start = time.time()
+        """原本的 detect_and_store 函数，用于 ultralytics 后端"""
         dino_res = run_grounding_dino(
             image_pil=image_pil,
             prompts=prompts,
@@ -440,217 +440,51 @@ def process_image(
             box_threshold=box_threshold,
             text_threshold=text_threshold,
         )
-        dino_time = time.time() - step_start
-        
-        step_start = time.time()
         boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
         masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
-        sam3_time = time.time() - step_start
-        
-        logger.info(f"[PERF] {key}: DINO={dino_time:.2f}s, SAM3={sam3_time:.2f}s, boxes={len(boxes)}")
-    
-    step_start = time.time()
-    all_boxes = np.array([])
-    all_labels = []
-    logger.info("[PERF] MLX backend: skipping DINO batch detection, using text prompts directly")
-    
-    use_batch = len(all_boxes) > 0
-    if use_batch and len(all_labels) != len(all_boxes):
-        logger.warning(f"[PERF] Labels count mismatch: {len(all_labels)} vs {len(all_boxes)}, falling back to individual calls")
-        use_batch = False
-    
-    def filter_boxes_by_prompts(boxes: np.ndarray, labels: List[str], target_prompts: List[str]) -> np.ndarray:
-        if len(boxes) == 0:
-            return np.array([])
-        if len(labels) == 0 or len(labels) != len(boxes):
-            return np.array([])
-        target_set = set(p.lower() for p in target_prompts)
-        filtered = []
-        for i, label in enumerate(labels):
-            if isinstance(label, str) and any(t in label.lower() for t in target_set):
-                filtered.append(boxes[i])
-        return np.array(filtered) if filtered else np.array([])
 
-    def process_sam3(key: str, prompts: List[str]):
-        step_start = time.time()
-        if use_batch:
-            boxes = filter_boxes_by_prompts(all_boxes, all_labels, prompts)
-            if len(boxes) > 0:
-                mask = mask_from_boxes(image_pil, boxes, sam3_model)
-                if mask is not None:
-                    logger.info(f"[PERF] {key}: SAM3={time.time()-step_start:.2f}s, boxes={len(boxes)}")
-                    return key, mask
-        detect_and_store(key, prompts)
-        return key, masks.get(key, np.zeros((h, w), dtype=bool))
-    
-    def process_sam3_pipelined(key: str, prompts: List[str]):
-        step_start = time.time()
-        
-        if use_batch:
-            preprocess_start = time.time()
-            boxes = filter_boxes_by_prompts(all_boxes, all_labels, prompts)
-            preprocess_time = time.time() - preprocess_start
-            
-            if len(boxes) > 0:
-                inference_start = time.time()
-                mask = mask_from_boxes(image_pil, boxes, sam3_model)
-                inference_time = time.time() - inference_start
-                
-                if mask is not None:
-                    total_time = time.time() - step_start
-                    logger.info(f"[PERF] {key}: total={total_time:.2f}s (preprocess={preprocess_time:.3f}s, inference={inference_time:.2f}s), boxes={len(boxes)}")
-                    return key, mask
-        
-        detect_and_store(key, prompts)
-        return key, masks.get(key, np.zeros((h, w), dtype=bool))
-
-    logger.info("[STEP] Stage 1: detecting shoes, head, lower_raw, upper_raw (sequential)...")
-    stage1_start = time.time()
-    
+    # Ultralytics 后端：按照原本的顺序处理
+    # 注意：MLX 后端已在上面通过 segment_parts 处理并返回
+    logger.debug("[STEP] detecting shoes ...")
     backend_name = sam3_model.backend_name
     FOOTWEAR_PROMPTS = get_prompts_for_backend(backend_name, "shoes")
-    HEADWEAR_PROMPTS = get_prompts_for_backend(backend_name, "head")
+    detect_and_store("shoes", FOOTWEAR_PROMPTS)
+
+    logger.debug("[STEP] detecting lower ...")
     LOWER_PROMPTS = get_prompts_for_backend(backend_name, "lower")
-    UPPER_PROMPTS = get_prompts_for_backend(backend_name, "upper")
-    
-    if sam3_model.backend_name == "mlx":
-        for key, prompts in [("shoes", FOOTWEAR_PROMPTS), ("head", HEADWEAR_PROMPTS), 
-                              ("lower_raw", LOWER_PROMPTS), ("upper_raw", UPPER_PROMPTS)]:
-            try:
-                _, mask = process_sam3_pipelined(key, prompts)
-                masks[key] = mask
-            except Exception as e:
-                logger.error(f"[PERF] Stage 1 task {key} failed: {e}", exc_info=True)
-                masks[key] = np.zeros((h, w), dtype=bool)
-    else:
-        for key, prompts in [("shoes", FOOTWEAR_PROMPTS), ("head", HEADWEAR_PROMPTS), 
-                              ("lower_raw", LOWER_PROMPTS), ("upper_raw", UPPER_PROMPTS)]:
-            try:
-                _, mask = process_sam3(key, prompts)
-                masks[key] = mask
-            except Exception as e:
-                logger.error(f"[PERF] Stage 1 task {key} failed: {e}", exc_info=True)
-                masks[key] = np.zeros((h, w), dtype=bool)
-    
-    if sam3_model.backend_name == "mlx":
-        try:
-            import mlx.core as mx
-            mx.eval()
-            try:
-                mx.metal.clear_cache()
-                logger.debug("[MLX] Cleared Metal cache after Stage 1")
-            except AttributeError:
-                pass
-            logger.debug("[MLX] Triggered lazy evaluation and cleared cache for Stage 1")
-        except ImportError:
-            pass
-    
-    logger.info(f"[PERF] Stage 1 completed: {time.time()-stage1_start:.2f}s")
-    
+    detect_and_store("lower_raw", LOWER_PROMPTS)
+    lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
+    lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
+    masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
+
+    logger.debug("[STEP] detecting head (for removal) ...")
+    HEADWEAR_PROMPTS = get_prompts_for_backend(backend_name, "head")
+    detect_and_store("head", HEADWEAR_PROMPTS)
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
-    
     if np.any(head_mask):
         kernel = np.ones((15, 15), np.uint8)
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["head"] = head_mask
-    
-    lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
-    lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
-    masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
+
+    logger.debug("[STEP] detecting upper ...")
+    UPPER_PROMPTS = get_prompts_for_backend(backend_name, "upper")
+    detect_and_store("upper_raw", UPPER_PROMPTS)
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
-    lower_mask_current = masks.get("lower", np.zeros_like(upper_mask))
-    
     upper_mask = (
         upper_mask
+        & (~masks.get("lower", np.zeros_like(upper_mask)))
         & (~masks.get("shoes", np.zeros_like(upper_mask)))
         & (~masks.get("head", np.zeros_like(upper_mask)))
     )
-    
-    if np.any(upper_mask) and np.any(lower_mask_current):
-        overlap = upper_mask & lower_mask_current
-        if np.any(overlap):
-            upper_area = np.sum(upper_mask)
-            overlap_area = np.sum(overlap)
-            overlap_ratio = overlap_area / max(upper_area, 1)
-            
-            if overlap_ratio > 0.1:
-                upper_mask = upper_mask | overlap
-                lower_mask_current = lower_mask_current & (~overlap)
-                masks["lower"] = lower_mask_current
-    
-    upper_mask = upper_mask & (~lower_mask_current)
     upper_mask = clean_mask(upper_mask, min_area_ratio=0.001)
     masks["upper"] = upper_mask
     masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
-    logger.info("[STEP] Stage 2: detecting legs and hands (sequential)...")
-    stage2_start = time.time()
-    
+    logger.debug("[STEP] detecting hands (remove from upper)...")
     HAND_PROMPTS = get_prompts_for_backend(backend_name, "hands")
-    LEG_PROMPTS: List[str] = [
-        "leg",
-        "legs",
-        "human leg",
-        "thigh",
-        "thighs",
-    ]
-    
-    if sam3_model.backend_name == "mlx":
-        for key, prompts in [("legs", LEG_PROMPTS), ("hands", HAND_PROMPTS)]:
-            try:
-                _, mask = process_sam3_pipelined(key, prompts)
-                masks[key] = mask
-            except Exception as e:
-                logger.error(f"[PERF] Stage 2 task {key} failed: {e}", exc_info=True)
-                masks[key] = np.zeros((h, w), dtype=bool)
-    else:
-        for key, prompts in [("legs", LEG_PROMPTS), ("hands", HAND_PROMPTS)]:
-            try:
-                _, mask = process_sam3(key, prompts)
-                masks[key] = mask
-            except Exception as e:
-                logger.error(f"[PERF] Stage 2 task {key} failed: {e}", exc_info=True)
-                masks[key] = np.zeros((h, w), dtype=bool)
-    
-    if sam3_model.backend_name == "mlx":
-        try:
-            import mlx.core as mx
-            mx.eval()
-            try:
-                mx.metal.clear_cache()
-                logger.debug("[MLX] Cleared Metal cache after Stage 2")
-            except AttributeError:
-                pass
-            logger.debug("[MLX] Triggered lazy evaluation for Stage 2")
-        except ImportError:
-            pass
-    
-    logger.info(f"[PERF] Stage 2 completed: {time.time()-stage2_start:.2f}s")
-    
-    leg_mask = masks.get("legs", np.zeros(image_rgb.shape[:2], dtype=bool))
-    leg_mask = clean_mask(leg_mask, min_area_ratio=0.0005)
-    
-    if np.any(leg_mask) and np.any(upper_mask):
-        leg_in_upper = leg_mask & upper_mask
-        if np.any(leg_in_upper):
-            upper_mask = upper_mask & (~leg_in_upper)
-            masks["lower"] = masks.get("lower", np.zeros_like(leg_in_upper)) | leg_in_upper
-            masks["lower"] = clean_mask(masks["lower"], min_area_ratio=0.001)
-            upper_mask = clean_mask(upper_mask, min_area_ratio=0.001)
-            masks["upper"] = upper_mask
-    
+    detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
-    
-    if np.any(hand_mask) and np.any(masks.get("lower", np.zeros_like(hand_mask))):
-        lower_mask = masks.get("lower", np.zeros_like(hand_mask))
-        overlap = hand_mask & lower_mask
-        if np.any(overlap):
-            overlap_ratio = np.sum(overlap) / max(np.sum(hand_mask), 1)
-            if overlap_ratio > 0.5:
-                logger.info(f"Hand mask mostly overlaps with lower ({overlap_ratio:.2%}), excluding overlap")
-                hand_mask = hand_mask & (~overlap)
-    
     if np.any(hand_mask):
         kernel = np.ones((5, 5), np.uint8)
         hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
