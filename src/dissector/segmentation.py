@@ -294,7 +294,7 @@ def dino_detect(
     boxes = results["boxes"].cpu().numpy() if "boxes" in results else np.array([])
     return boxes
 
-def segment_parts(
+def segment_parts_mlx(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
     processor=None,
@@ -308,83 +308,32 @@ def segment_parts(
     h, w = image_rgb.shape[:2]
     
     results: Dict[str, str] = {}
-    
-    use_dino = sam3_model.backend_name == "ultralytics" and processor is not None and dino_model is not None
-    
-    if sam3_model.backend_name == "mlx":
-        prompts_dict = BODY_PARTS_PROMPTS_CORE
-    else:
-        prompts_dict = BODY_PARTS_PROMPTS_FULL
-    
+    prompts_dict = BODY_PARTS_PROMPTS_CORE
     masks_dict: Dict[str, np.ndarray] = {}
-    
     other_parts = ["lower", "shoes", "head", "hands"]
     
     for part_name, prompts in prompts_dict.items():
         if part_name == "lower_negation_for_upper":
             continue
         try:
-            mask = None
-            
-            if sam3_model.backend_name == "mlx":
-                
-                mask_total = None
-                successful_prompts = 0
-                failed_prompts = 0
-                
-                for i, prompt in enumerate(prompts):
-                    try:
-                        prompt_mask = sam3_model.generate_mask_from_text_prompt(
-                            image_pil=image_pil,
-                            text_prompt=prompt,
-                        )
-                        if prompt_mask is not None and prompt_mask.size > 0:
-                            mask_pixels = np.sum(prompt_mask)
-                            if mask_pixels > 0:
-                                if mask_total is None:
-                                    mask_total = prompt_mask.copy()
-                                else:
-                                    mask_total |= prompt_mask
-                                successful_prompts += 1
+            mask_total = None
+            for prompt in prompts:
+                try:
+                    prompt_mask = sam3_model.generate_mask_from_text_prompt(
+                        image_pil=image_pil,
+                        text_prompt=prompt,
+                    )
+                    if prompt_mask is not None and prompt_mask.size > 0:
+                        mask_pixels = np.sum(prompt_mask)
+                        if mask_pixels > 0:
+                            if mask_total is None:
+                                mask_total = prompt_mask.copy()
                             else:
-                                failed_prompts += 1
-                        else:
-                            failed_prompts += 1
-                    except Exception as e:
-                        failed_prompts += 1
-                        continue
-                
-                mask = mask_total
-                
-                if (mask is None or mask.size == 0) and use_dino:
-                    boxes = dino_detect(
-                        image_pil=image_pil,
-                        prompts=prompts,
-                        processor=processor,
-                        dino_model=dino_model,
-                        device=device,
-                        box_threshold=box_threshold,
-                        text_threshold=text_threshold,
-                    )
-                    
-                    if boxes.size > 0:
-                        mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
-            else:
-                if use_dino:
-                    boxes = dino_detect(
-                        image_pil=image_pil,
-                        prompts=prompts,
-                        processor=processor,
-                        dino_model=dino_model,
-                        device=device,
-                        box_threshold=box_threshold,
-                        text_threshold=text_threshold,
-                    )
-                    
-                    if boxes.size > 0:
-                        mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
-                else:
-                    mask = None
+                                mask_total |= prompt_mask
+                except Exception as e:
+                    continue
+            
+            mask = mask_total
             
             if mask is None or mask.size == 0 or np.sum(mask) == 0:
                 masks_dict[part_name] = np.zeros((h, w), dtype=bool)
@@ -401,42 +350,25 @@ def segment_parts(
     
     if "lower_negation_for_upper" in prompts_dict:
         lower_negation_prompts = prompts_dict["lower_negation_for_upper"]
-        lower_negation_mask = None
-        
-        if sam3_model.backend_name == "mlx":
-            lower_negation_mask_total = None
-            for prompt in lower_negation_prompts:
-                try:
-                    prompt_mask = sam3_model.generate_mask_from_text_prompt(
-                        image_pil=image_pil,
-                        text_prompt=prompt,
-                    )
-                    if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
-                        if lower_negation_mask_total is None:
-                            lower_negation_mask_total = prompt_mask.copy()
-                        else:
-                            lower_negation_mask_total |= prompt_mask
-                except Exception as e:
-                    continue
-            lower_negation_mask = lower_negation_mask_total
-        else:
-            if use_dino:
-                boxes = dino_detect(
+        lower_negation_mask_total = None
+        for prompt in lower_negation_prompts:
+            try:
+                prompt_mask = sam3_model.generate_mask_from_text_prompt(
                     image_pil=image_pil,
-                    prompts=lower_negation_prompts,
-                    processor=processor,
-                    dino_model=dino_model,
-                    device=device,
-                    box_threshold=box_threshold,
-                    text_threshold=text_threshold,
+                    text_prompt=prompt,
                 )
-                if boxes.size > 0:
-                    lower_negation_mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
+                if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
+                    if lower_negation_mask_total is None:
+                        lower_negation_mask_total = prompt_mask.copy()
+                    else:
+                        lower_negation_mask_total |= prompt_mask
+            except Exception as e:
+                continue
         
-        if lower_negation_mask is None or lower_negation_mask.size == 0:
-            lower_mask = masks_dict.get("lower", np.zeros((h, w), dtype=bool))
-            lower_negation_mask = lower_mask.copy()
+        if lower_negation_mask_total is None or lower_negation_mask_total.size == 0:
+            lower_negation_mask = masks_dict.get("lower", np.zeros((h, w), dtype=bool)).copy()
         else:
+            lower_negation_mask = lower_negation_mask_total
             if lower_negation_mask.shape != (h, w):
                 mask_uint8 = (lower_negation_mask.astype(np.uint8) * 255) if lower_negation_mask.dtype == bool else lower_negation_mask.astype(np.uint8)
                 lower_negation_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
@@ -444,51 +376,35 @@ def segment_parts(
         masks_dict["lower_negation_for_upper"] = lower_negation_mask
     else:
         masks_dict["lower_negation_for_upper"] = masks_dict.get("lower", np.zeros((h, w), dtype=bool))
+    
     person_prompts = ["person", "full body", "outfit", "garment"]
-    person_mask = None
-    
-    if sam3_model.backend_name == "mlx":
-        person_mask_total = None
-        for prompt in person_prompts:
-            try:
-                prompt_mask = sam3_model.generate_mask_from_text_prompt(
-                    image_pil=image_pil,
-                    text_prompt=prompt,
-                )
-                if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
-                    if person_mask_total is None:
-                        person_mask_total = prompt_mask.copy()
-                    else:
-                        person_mask_total |= prompt_mask
-            except Exception as e:
-                continue
-        person_mask = person_mask_total
-    else:
-        if use_dino:
-            boxes = dino_detect(
+    person_mask_total = None
+    for prompt in person_prompts:
+        try:
+            prompt_mask = sam3_model.generate_mask_from_text_prompt(
                 image_pil=image_pil,
-                prompts=person_prompts,
-                processor=processor,
-                dino_model=dino_model,
-                device=device,
-                box_threshold=box_threshold,
-                text_threshold=text_threshold,
+                text_prompt=prompt,
             )
-            if boxes.size > 0:
-                person_mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
+            if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
+                if person_mask_total is None:
+                    person_mask_total = prompt_mask.copy()
+                else:
+                    person_mask_total |= prompt_mask
+        except Exception as e:
+            continue
     
-    if person_mask is None or person_mask.size == 0 or np.sum(person_mask) == 0:
+    if person_mask_total is None or person_mask_total.size == 0:
         person_mask = np.zeros((h, w), dtype=bool)
         for part_name in other_parts:
             if part_name in masks_dict:
                 person_mask |= masks_dict[part_name]
     else:
+        person_mask = person_mask_total
         if person_mask.shape != (h, w):
             mask_uint8 = (person_mask.astype(np.uint8) * 255) if person_mask.dtype == bool else person_mask.astype(np.uint8)
             person_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
     
     upper_detected = masks_dict.get("upper", np.zeros((h, w), dtype=bool))
-    
     lower_negation_mask = masks_dict.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
     
     upper_detected_cleaned = upper_detected.copy()
@@ -522,3 +438,123 @@ def segment_parts(
         results[part_name] = encode_image(cropped_img, ext=".jpg")
     
     return results
+
+def segment_parts_ultralytics(
+    image_pil: Image.Image,
+    sam3_model: SAM3Base,
+    processor=None,
+    dino_model=None,
+    device: Optional[torch.device] = None,
+    box_threshold: float = 0.3,
+    text_threshold: float = 0.25,
+) -> Dict[str, str]:
+    image_rgb = np.array(image_pil)
+    image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+    h, w = image_rgb.shape[:2]
+    
+    results: Dict[str, str] = {}
+    prompts_dict = BODY_PARTS_PROMPTS_FULL
+    masks_dict: Dict[str, np.ndarray] = {}
+    
+    def detect_and_store(key: str, prompts: List[str]):
+        boxes = dino_detect(
+            image_pil=image_pil,
+            prompts=prompts,
+            processor=processor,
+            dino_model=dino_model,
+            device=device,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+        )
+        if boxes.size > 0:
+            mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
+            if mask is not None and mask.size > 0:
+                if mask.shape != (h, w):
+                    mask_uint8 = (mask.astype(np.uint8) * 255) if mask.dtype == bool else mask.astype(np.uint8)
+                    mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                masks_dict[key] = mask
+            else:
+                masks_dict[key] = np.zeros((h, w), dtype=bool)
+        else:
+            masks_dict[key] = np.zeros((h, w), dtype=bool)
+    
+    detect_and_store("shoes", prompts_dict.get("shoes", []))
+    
+    detect_and_store("lower_raw", prompts_dict.get("lower", []))
+    lower_mask = masks_dict.get("lower_raw", np.zeros((h, w), dtype=bool))
+    lower_mask = lower_mask & (~masks_dict.get("shoes", np.zeros_like(lower_mask)))
+    masks_dict["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
+    
+    detect_and_store("head", prompts_dict.get("head", []))
+    head_mask = masks_dict.get("head", np.zeros((h, w), dtype=bool))
+    if np.any(head_mask):
+        kernel = np.ones((15, 15), np.uint8)
+        head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+    masks_dict["head"] = head_mask
+    
+    detect_and_store("upper_raw", prompts_dict.get("upper", []))
+    upper_mask = masks_dict.get("upper_raw", np.zeros((h, w), dtype=bool))
+    upper_mask = (
+        upper_mask
+        & (~masks_dict.get("lower", np.zeros_like(upper_mask)))
+        & (~masks_dict.get("shoes", np.zeros_like(upper_mask)))
+        & (~masks_dict.get("head", np.zeros_like(upper_mask)))
+    )
+    upper_mask = clean_mask(upper_mask, min_area_ratio=0.001)
+    masks_dict["upper"] = upper_mask
+    masks_dict["shoes"] = clean_mask(masks_dict.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
+    
+    detect_and_store("hands", prompts_dict.get("hands", []))
+    hand_mask = masks_dict.get("hands", np.zeros((h, w), dtype=bool))
+    hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
+    if np.any(hand_mask):
+        kernel = np.ones((5, 5), np.uint8)
+        hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+    masks_dict["hands"] = hand_mask
+    
+    masks_dict["upper"] = masks_dict.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
+    masks_dict["upper"] = clean_mask(masks_dict["upper"], min_area_ratio=0.001)
+    
+    outputs = [
+        ("upper", "upper"),
+        ("lower", "lower"),
+        ("shoes", "shoes"),
+        ("head", "head"),
+        ("hands", "hands"),
+    ]
+    for key, name in outputs:
+        mask_part = masks_dict.get(key, np.zeros((h, w), dtype=bool))
+        cropped_img = white_bg(image_bgr, mask_part)
+        results[name] = encode_image(cropped_img, ext=".jpg")
+    
+    return results
+
+def segment_parts(
+    image_pil: Image.Image,
+    sam3_model: SAM3Base,
+    processor=None,
+    dino_model=None,
+    device: Optional[torch.device] = None,
+    box_threshold: float = 0.3,
+    text_threshold: float = 0.25,
+) -> Dict[str, str]:
+    if sam3_model.backend_name == "mlx":
+        return segment_parts_mlx(
+            image_pil=image_pil,
+            sam3_model=sam3_model,
+            processor=processor,
+            dino_model=dino_model,
+            device=device,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+        )
+    else:
+        return segment_parts_ultralytics(
+            image_pil=image_pil,
+            sam3_model=sam3_model,
+            processor=processor,
+            dino_model=dino_model,
+            device=device,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+        )
