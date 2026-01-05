@@ -604,7 +604,6 @@ def process_image(
         logger.info(f"[PERF] MLX segment_parts: {segment_time:.2f}s")
         return results
 
-    '''
     # Ultralytics 后端使用 process_image_old
     logger.info("[PERF] Ultralytics backend: using process_image_old")
     return process_image_old(
@@ -616,104 +615,6 @@ def process_image(
         box_threshold=box_threshold,
         text_threshold=text_threshold,
     )
-    '''
-    # 创建 tmp 目录用于保存中间 mask
-    tmp_dir = os.path.join(os.path.dirname(image_path), "tmp")
-    os.makedirs(tmp_dir, exist_ok=True)
-    base_name = os.path.splitext(os.path.basename(image_path))[0]
-    
-    masks: Dict[str, np.ndarray] = {}
-    
-    def detect_and_store(key: str, prompts: List[str]):
-        """原本的 detect_and_store 函数，用于 ultralytics 后端"""
-        dino_res = run_grounding_dino(
-            image_pil=image_pil,
-            prompts=prompts,
-            processor=processor,
-            dino_model=dino_model,
-            device=device,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-        )
-        boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-        masks[key] = mask_from_boxes(image_pil, boxes, sam3_model, save_debug=True, debug_prefix=f"{base_name}_{key}", debug_dir=tmp_dir)
-
-    # Ultralytics 后端：按照原本的顺序处理
-    # 注意：MLX 后端已在上面通过 segment_parts 处理并返回
-    logger.info("[STEP] detecting shoes ...")
-    backend_name = sam3_model.backend_name
-    FOOTWEAR_PROMPTS = get_prompts_for_backend(backend_name, "shoes")
-    detect_and_store("shoes", FOOTWEAR_PROMPTS)
-
-    logger.info("[STEP] detecting lower ...")
-    LOWER_PROMPTS = get_prompts_for_backend(backend_name, "lower")
-    detect_and_store("lower_raw", LOWER_PROMPTS)
-    lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
-    lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
-    masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
-
-    logger.info("[STEP] detecting head (for removal) ...")
-    HEADWEAR_PROMPTS = get_prompts_for_backend(backend_name, "head")
-    detect_and_store("head", HEADWEAR_PROMPTS)
-    head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
-    if np.any(head_mask):
-        kernel = np.ones((15, 15), np.uint8)
-        head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
-    masks["head"] = head_mask
-
-    logger.info("[STEP] detecting upper ...")
-    UPPER_PROMPTS = get_prompts_for_backend(backend_name, "upper")
-    detect_and_store("upper_raw", UPPER_PROMPTS)
-    upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
-    upper_mask = (
-        upper_mask
-        & (~masks.get("lower", np.zeros_like(upper_mask)))
-        & (~masks.get("shoes", np.zeros_like(upper_mask)))
-        & (~masks.get("head", np.zeros_like(upper_mask)))
-    )
-    upper_mask = clean_mask(upper_mask, min_area_ratio=0.001)
-    masks["upper"] = upper_mask
-    masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
-
-    logger.info("[STEP] detecting hands (remove from upper)...")
-    HAND_PROMPTS = get_prompts_for_backend(backend_name, "hands")
-    detect_and_store("hands", HAND_PROMPTS)
-    hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
-    hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
-    if np.any(hand_mask):
-        kernel = np.ones((5, 5), np.uint8)
-        hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
-    masks["hands"] = hand_mask
-
-    masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
-    masks["upper"] = clean_mask(masks["upper"], min_area_ratio=0.001)
-    
-    # 保存每个部位的最终 mask 到 tmp 目录
-    for key in ["shoes", "lower_raw", "lower", "head", "upper_raw", "upper", "hands"]:
-        if key in masks:
-            mask_vis = (masks[key].astype(np.uint8)) * 255
-            mask_path = os.path.join(tmp_dir, f"{base_name}_{key}_final_mask.png")
-            cv2.imwrite(mask_path, mask_vis)
-            logger.info(f"Saved final mask: {mask_path}")
-    
-    results: Dict[str, str] = {}
-    outputs = [
-        ("upper", "upper"),
-        ("lower", "lower"),
-        ("shoes", "shoes"),
-        ("head", "head"),
-        ("hands", "hands"),
-    ]
-    step_start = time.time()
-    for key, name in outputs:
-        mask_part = masks.get(key, np.zeros((h, w), dtype=bool))
-        out_img = white_bg(image_bgr, mask_part)
-        results[name] = encode_image(out_img, ext=".jpg")
-    encode_time = time.time() - step_start
-    
-    total_time = time.time() - start_time
-    logger.info(f"[PERF] Total: {total_time:.2f}s (encode: {encode_time:.2f}s)")
-    return results
 
 
 def run_batch(
