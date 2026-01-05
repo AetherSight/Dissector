@@ -163,6 +163,8 @@ def mask_from_boxes(
     boxes: np.ndarray,
     sam3_model: SAM3Base,
     min_area_ratio: float = 0.001,
+    save_debug: bool = False,
+    debug_prefix: str = "",
 ) -> np.ndarray:
     """
     从边界框列表生成 mask（优化版：支持批量处理）
@@ -200,7 +202,8 @@ def mask_from_boxes(
         logger.warning(f"[SAM3] Batch processing not available (hasattr: {hasattr(sam3_model, 'generate_mask_from_bboxes')}), using loop for {len(boxes)} boxes")
     
     mask_total = None
-    for box in boxes:
+    individual_masks = []
+    for i, box in enumerate(boxes):
         x1, y1, x2, y2 = box
         bbox = np.array([[x1, y1, x2, y2]])
         
@@ -218,6 +221,14 @@ def mask_from_boxes(
         if np.sum(mask) == 0:
             continue
 
+        if save_debug and debug_prefix:
+            mask_vis = (mask.astype(np.uint8)) * 255
+            debug_path = os.path.join(os.path.dirname(os.path.dirname(image_path)) if hasattr(image_pil, 'filename') else ".", "tmp", f"{debug_prefix}_box_{i}_mask.png")
+            os.makedirs(os.path.dirname(debug_path), exist_ok=True)
+            cv2.imwrite(debug_path, mask_vis)
+            logger.info(f"Saved individual mask: {debug_path}")
+
+        individual_masks.append(mask)
         if mask_total is None:
             mask_total = mask.copy()
         else:
@@ -225,6 +236,13 @@ def mask_from_boxes(
 
     if mask_total is None:
         return np.zeros((h, w), dtype=bool)
+
+    if save_debug and debug_prefix:
+        mask_vis = (mask_total.astype(np.uint8)) * 255
+        debug_path = os.path.join(os.path.dirname(os.path.dirname(image_path)) if hasattr(image_pil, 'filename') else ".", "tmp", f"{debug_prefix}_merged_mask.png")
+        os.makedirs(os.path.dirname(debug_path), exist_ok=True)
+        cv2.imwrite(debug_path, mask_vis)
+        logger.info(f"Saved merged mask: {debug_path}")
 
     kernel = np.ones((3, 3), np.uint8)
     mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
@@ -246,14 +264,13 @@ def white_bg(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
     x0 = max(0, x0 - pad)
     x1 = min(mask.shape[1] - 1, x1 + pad)
 
-    img_crop = image_bgr[y0 : y1 + 1, x0 : x1 + 1].copy()  # 确保使用副本
+    img_crop = image_bgr[y0 : y1 + 1, x0 : x1 + 1]
     mask_crop = mask_uint8[y0 : y1 + 1, x0 : x1 + 1]
 
     fg = cv2.bitwise_and(img_crop, img_crop, mask=mask_crop)
     white = np.full_like(img_crop, 255, dtype=np.uint8)
     bg = cv2.bitwise_and(white, white, mask=cv2.bitwise_not(mask_crop))
-    result = cv2.add(fg, bg)
-    return result.copy()  # 确保返回副本
+    return cv2.add(fg, bg)
 
 
 def encode_image(img_bgr: np.ndarray, ext: str = ".jpg") -> str:
@@ -432,7 +449,6 @@ def process_image(
 
     def detect_and_store(key: str, prompts: List[str]):
         """原本的 detect_and_store 函数，用于 ultralytics 后端"""
-        logger.info(f"[DEBUG] detect_and_store called with key='{key}', prompts={prompts[:3]}...")
         dino_res = run_grounding_dino(
             image_pil=image_pil,
             prompts=prompts,
@@ -443,11 +459,8 @@ def process_image(
             text_threshold=text_threshold,
         )
         boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-        logger.info(f"[DEBUG] detect_and_store('{key}') found {len(boxes)} boxes")
-        mask = mask_from_boxes(image_pil, boxes, sam3_model)
-        logger.info(f"[DEBUG] detect_and_store('{key}') mask sum: {np.sum(mask)}")
-        masks[key] = mask.copy()  # 确保使用副本，避免引用问题
-        logger.info(f"[DEBUG] After storing masks['{key}'], sum: {np.sum(masks[key])}")
+        base_name = os.path.splitext(os.path.basename(image_path))[0]
+        masks[key] = mask_from_boxes(image_pil, boxes, sam3_model, save_debug=True, debug_prefix=f"{base_name}_{key}")
 
     # Ultralytics 后端：按照原本的顺序处理
     # 注意：MLX 后端已在上面通过 segment_parts 处理并返回
@@ -490,19 +503,28 @@ def process_image(
     HAND_PROMPTS = get_prompts_for_backend(backend_name, "hands")
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
-    logger.info(f"[DEBUG] After detect_and_store('hands'), hand_mask sum: {np.sum(hand_mask)}")
-    logger.info(f"[DEBUG] After detect_and_store('hands'), shoes mask sum: {np.sum(masks.get('shoes', np.zeros((h, w), dtype=bool)))}")
     hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
     if np.any(hand_mask):
         kernel = np.ones((5, 5), np.uint8)
         hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
-    masks["hands"] = hand_mask.copy()  # 确保使用副本，避免引用问题
-    logger.info(f"[DEBUG] After processing, hand_mask sum: {np.sum(hand_mask)}")
-    logger.info(f"[DEBUG] After processing, masks['hands'] sum: {np.sum(masks['hands'])}")
-    logger.info(f"[DEBUG] After processing, masks['shoes'] sum: {np.sum(masks.get('shoes', np.zeros((h, w), dtype=bool)))}")
+    masks["hands"] = hand_mask
 
     masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
     masks["upper"] = clean_mask(masks["upper"], min_area_ratio=0.001)
+    
+    # 保存中间 mask 图片到 tmp 目录
+    tmp_dir = os.path.join(os.path.dirname(image_path), "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    
+    # 保存每个部位的 mask
+    for key in ["shoes", "lower_raw", "lower", "head", "upper_raw", "upper", "hands"]:
+        if key in masks:
+            mask_vis = (masks[key].astype(np.uint8)) * 255
+            mask_path = os.path.join(tmp_dir, f"{base_name}_{key}_mask.png")
+            cv2.imwrite(mask_path, mask_vis)
+            logger.info(f"Saved mask: {mask_path}")
+    
     results: Dict[str, str] = {}
     outputs = [
         ("upper", "upper"),
@@ -513,13 +535,9 @@ def process_image(
     ]
     step_start = time.time()
     for key, name in outputs:
-        mask_part = masks.get(key, np.zeros((h, w), dtype=bool)).copy()  # 确保使用副本
-        logger.info(f"[DEBUG] Output {name}: key={key}, mask sum={np.sum(mask_part)}")
+        mask_part = masks.get(key, np.zeros((h, w), dtype=bool))
         out_img = white_bg(image_bgr, mask_part)
-        logger.info(f"[DEBUG] Output {name}: out_img shape={out_img.shape}, dtype={out_img.dtype}, sum={np.sum(out_img)}")
-        encoded = encode_image(out_img, ext=".jpg")
-        logger.info(f"[DEBUG] Output {name}: encoded length={len(encoded)}, first 50 chars={encoded[:50] if len(encoded) > 50 else encoded}")
-        results[name] = encoded
+        results[name] = encode_image(out_img, ext=".jpg")
     encode_time = time.time() - step_start
     
     total_time = time.time() - start_time
