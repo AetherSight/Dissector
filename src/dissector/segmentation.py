@@ -10,7 +10,6 @@ from PIL import Image
 from typing import Dict, Optional, List, Tuple
 import base64
 import torch
-import os
 
 from .backend import SAM3Base
 
@@ -325,20 +324,10 @@ def segment_parts(
     device: Optional[torch.device] = None,
     box_threshold: float = 0.3,
     text_threshold: float = 0.25,
-    debug_output_dir: Optional[str] = None,
 ) -> Dict[str, str]:
     image_rgb = np.array(image_pil)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     h, w = image_rgb.shape[:2]
-    
-    if debug_output_dir is None:
-        debug_output_dir = "tmp"
-    
-    debug_dir = os.path.join(debug_output_dir, "debug_segmentation")
-    os.makedirs(debug_dir, exist_ok=True)
-    logger.info(f"Debug output directory: {debug_dir}")
-    
-    cv2.imwrite(os.path.join(debug_dir, "00_original.jpg"), image_bgr)
     
     results: Dict[str, str] = {}
     
@@ -373,38 +362,10 @@ def segment_parts(
                         if prompt_mask is not None and prompt_mask.size > 0:
                             mask_pixels = np.sum(prompt_mask)
                             if mask_pixels > 0:
-                                prompt_mask_vis = (prompt_mask.astype(np.uint8) * 255)
-                                prompt_overlay = image_bgr.copy()
-                                prompt_overlay[prompt_mask] = prompt_overlay[prompt_mask] * 0.5 + np.array([0, 255, 0], dtype=np.uint8) * 0.5
-                                safe_prompt = prompt.replace(" ", "_").replace("/", "_")[:30]
-                                cv2.imwrite(
-                                    os.path.join(debug_dir, f"{part_name}_prompt_{i+1:02d}_{safe_prompt}_mask.png"),
-                                    prompt_mask_vis
-                                )
-                                cv2.imwrite(
-                                    os.path.join(debug_dir, f"{part_name}_prompt_{i+1:02d}_{safe_prompt}_overlay.jpg"),
-                                    prompt_overlay
-                                )
-                                
                                 if mask_total is None:
                                     mask_total = prompt_mask.copy()
                                 else:
                                     mask_total |= prompt_mask
-                                
-                                if (i + 1) % 10 == 0 or i == len(prompts) - 1:
-                                    if mask_total is not None:
-                                        merged_mask_vis = (mask_total.astype(np.uint8) * 255)
-                                        merged_overlay = image_bgr.copy()
-                                        merged_overlay[mask_total] = merged_overlay[mask_total] * 0.5 + np.array([0, 255, 0], dtype=np.uint8) * 0.5
-                                        cv2.imwrite(
-                                            os.path.join(debug_dir, f"{part_name}_merged_after_prompt_{i+1:02d}_mask.png"),
-                                            merged_mask_vis
-                                        )
-                                        cv2.imwrite(
-                                            os.path.join(debug_dir, f"{part_name}_merged_after_prompt_{i+1:02d}_overlay.jpg"),
-                                            merged_overlay
-                                        )
-                                
                                 successful_prompts += 1
                                 logger.debug(f"MLX: {part_name} prompt {i+1}/{len(prompts)} '{prompt[:30]}...' succeeded, mask pixels: {mask_pixels}")
                             else:
@@ -472,12 +433,6 @@ def segment_parts(
                 mask_uint8 = (mask.astype(np.uint8) * 255) if mask.dtype == bool else mask.astype(np.uint8)
                 mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
             
-            mask_vis = (mask.astype(np.uint8) * 255)
-            mask_overlay = image_bgr.copy()
-            mask_overlay[mask] = mask_overlay[mask] * 0.5 + np.array([0, 255, 0], dtype=np.uint8) * 0.5
-            cv2.imwrite(os.path.join(debug_dir, f"{part_name}_before_postprocess_mask.png"), mask_vis)
-            cv2.imwrite(os.path.join(debug_dir, f"{part_name}_before_postprocess_overlay.jpg"), mask_overlay)
-            
             masks_dict[part_name] = mask
             
         except Exception as e:
@@ -491,22 +446,12 @@ def segment_parts(
         if "shoes" in masks_dict:
             upper_mask = upper_mask & (~masks_dict["shoes"])
         masks_dict["upper"] = upper_mask
-        upper_vis = (upper_mask.astype(np.uint8) * 255)
-        upper_overlay = image_bgr.copy()
-        upper_overlay[upper_mask] = upper_overlay[upper_mask] * 0.5 + np.array([255, 0, 0], dtype=np.uint8) * 0.5
-        cv2.imwrite(os.path.join(debug_dir, "upper_after_postprocess_mask.png"), upper_vis)
-        cv2.imwrite(os.path.join(debug_dir, "upper_after_postprocess_overlay.jpg"), upper_overlay)
     
     if "lower" in masks_dict:
         lower_mask = masks_dict["lower"].copy()
         if "shoes" in masks_dict:
             lower_mask = lower_mask & (~masks_dict["shoes"])
         masks_dict["lower"] = lower_mask
-        lower_vis = (lower_mask.astype(np.uint8) * 255)
-        lower_overlay = image_bgr.copy()
-        lower_overlay[lower_mask] = lower_overlay[lower_mask] * 0.5 + np.array([0, 0, 255], dtype=np.uint8) * 0.5
-        cv2.imwrite(os.path.join(debug_dir, "lower_after_postprocess_mask.png"), lower_vis)
-        cv2.imwrite(os.path.join(debug_dir, "lower_after_postprocess_overlay.jpg"), lower_overlay)
     
     if "upper" in masks_dict and "lower" in masks_dict:
         upper_mask = masks_dict["upper"]
@@ -527,50 +472,11 @@ def segment_parts(
                 lower_mask = lower_mask | overlap
                 masks_dict["upper"] = upper_mask
                 masks_dict["lower"] = lower_mask
-            upper_final_vis = (upper_mask.astype(np.uint8) * 255)
-            lower_final_vis = (lower_mask.astype(np.uint8) * 255)
-            cv2.imwrite(os.path.join(debug_dir, "upper_final_after_overlap_mask.png"), upper_final_vis)
-            cv2.imwrite(os.path.join(debug_dir, "lower_final_after_overlap_mask.png"), lower_final_vis)
     
     for part_name in prompts_dict.keys():
         mask = masks_dict.get(part_name, np.zeros((h, w), dtype=bool))
-        
-        final_mask_vis = (mask.astype(np.uint8) * 255)
-        final_overlay = image_bgr.copy()
-        colors = {
-            "upper": [255, 0, 0],
-            "lower": [0, 0, 255],
-            "shoes": [255, 255, 0],
-            "head": [255, 0, 255],
-            "hands": [0, 255, 255],
-        }
-        color = colors.get(part_name, [0, 255, 0])
-        final_overlay[mask] = final_overlay[mask] * 0.5 + np.array(color, dtype=np.uint8) * 0.5
-        cv2.imwrite(os.path.join(debug_dir, f"{part_name}_final_mask.png"), final_mask_vis)
-        cv2.imwrite(os.path.join(debug_dir, f"{part_name}_final_overlay.jpg"), final_overlay)
-        
         cropped_img = white_bg(image_bgr, mask)
-        
-        cv2.imwrite(os.path.join(debug_dir, f"{part_name}_final_cropped.jpg"), cropped_img)
-        
         results[part_name] = encode_image(cropped_img, ext=".jpg")
-        
         logger.info(f"Successfully segmented {part_name}")
-    
-    all_parts_overlay = image_bgr.copy()
-    part_colors = {
-        "upper": [255, 0, 0],
-        "lower": [0, 0, 255],
-        "shoes": [255, 255, 0],
-        "head": [255, 0, 255],
-        "hands": [0, 255, 255],
-    }
-    for part_name, color in part_colors.items():
-        if part_name in masks_dict:
-            mask = masks_dict[part_name]
-            all_parts_overlay[mask] = all_parts_overlay[mask] * 0.5 + np.array(color, dtype=np.uint8) * 0.5
-    cv2.imwrite(os.path.join(debug_dir, "all_parts_merged_overlay.jpg"), all_parts_overlay)
-    
-    logger.info(f"Debug images saved to: {debug_dir}")
     
     return results

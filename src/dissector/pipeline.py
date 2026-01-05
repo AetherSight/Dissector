@@ -390,7 +390,6 @@ def process_image_simple(
         device=device,
         box_threshold=box_threshold,
         text_threshold=text_threshold,
-        debug_output_dir="tmp",
     )
 
 
@@ -423,7 +422,6 @@ def process_image(
             device=None,
             box_threshold=box_threshold,
             text_threshold=text_threshold,
-            debug_output_dir="tmp",
         )
         segment_time = time.time() - segment_start
         logger.info(f"[PERF] MLX segment_parts: {segment_time:.2f}s")
