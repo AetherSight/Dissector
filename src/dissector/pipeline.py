@@ -604,6 +604,7 @@ def process_image(
         logger.info(f"[PERF] MLX segment_parts: {segment_time:.2f}s")
         return results
 
+    '''
     # Ultralytics 后端使用 process_image_old
     logger.info("[PERF] Ultralytics backend: using process_image_old")
     return process_image_old(
@@ -615,11 +616,13 @@ def process_image(
         box_threshold=box_threshold,
         text_threshold=text_threshold,
     )
-
+    '''
     # 创建 tmp 目录用于保存中间 mask
     tmp_dir = os.path.join(os.path.dirname(image_path), "tmp")
     os.makedirs(tmp_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(image_path))[0]
+    
+    masks: Dict[str, np.ndarray] = {}
     
     def detect_and_store(key: str, prompts: List[str]):
         """原本的 detect_and_store 函数，用于 ultralytics 后端"""
@@ -673,7 +676,7 @@ def process_image(
     masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
     logger.info("[STEP] detecting hands (remove from upper)...")
-    HAND_PROMPTS = ç(backend_name, "hands")
+    HAND_PROMPTS = get_prompts_for_backend(backend_name, "hands")
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
