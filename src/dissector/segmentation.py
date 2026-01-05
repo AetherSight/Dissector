@@ -10,6 +10,7 @@ from typing import Dict, Optional, List
 import base64
 import logging
 import os
+import torch
 
 from .backend import SAM3Base
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
