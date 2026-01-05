@@ -431,6 +431,7 @@ def process_image(
 
     def detect_and_store(key: str, prompts: List[str]):
         """原本的 detect_and_store 函数，用于 ultralytics 后端"""
+        logger.info(f"[DEBUG] detect_and_store called with key='{key}', prompts={prompts[:3]}...")
         dino_res = run_grounding_dino(
             image_pil=image_pil,
             prompts=prompts,
@@ -441,8 +442,11 @@ def process_image(
             text_threshold=text_threshold,
         )
         boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
+        logger.info(f"[DEBUG] detect_and_store('{key}') found {len(boxes)} boxes")
         mask = mask_from_boxes(image_pil, boxes, sam3_model)
+        logger.info(f"[DEBUG] detect_and_store('{key}') mask sum: {np.sum(mask)}")
         masks[key] = mask.copy()  # 确保使用副本，避免引用问题
+        logger.info(f"[DEBUG] After storing masks['{key}'], sum: {np.sum(masks[key])}")
 
     # Ultralytics 后端：按照原本的顺序处理
     # 注意：MLX 后端已在上面通过 segment_parts 处理并返回
@@ -485,11 +489,16 @@ def process_image(
     HAND_PROMPTS = get_prompts_for_backend(backend_name, "hands")
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
+    logger.info(f"[DEBUG] After detect_and_store('hands'), hand_mask sum: {np.sum(hand_mask)}")
+    logger.info(f"[DEBUG] After detect_and_store('hands'), shoes mask sum: {np.sum(masks.get('shoes', np.zeros((h, w), dtype=bool)))}")
     hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
     if np.any(hand_mask):
         kernel = np.ones((5, 5), np.uint8)
         hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["hands"] = hand_mask.copy()  # 确保使用副本，避免引用问题
+    logger.info(f"[DEBUG] After processing, hand_mask sum: {np.sum(hand_mask)}")
+    logger.info(f"[DEBUG] After processing, masks['hands'] sum: {np.sum(masks['hands'])}")
+    logger.info(f"[DEBUG] After processing, masks['shoes'] sum: {np.sum(masks.get('shoes', np.zeros((h, w), dtype=bool)))}")
 
     masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
     masks["upper"] = clean_mask(masks["upper"], min_area_ratio=0.001)
@@ -504,6 +513,7 @@ def process_image(
     step_start = time.time()
     for key, name in outputs:
         mask_part = masks.get(key, np.zeros((h, w), dtype=bool)).copy()  # 确保使用副本
+        logger.info(f"[DEBUG] Output {name}: key={key}, mask sum={np.sum(mask_part)}")
         out_img = white_bg(image_bgr, mask_part)
         results[name] = encode_image(out_img, ext=".jpg")
     encode_time = time.time() - step_start
