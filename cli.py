@@ -32,8 +32,6 @@ from dissector.pipeline import (
     process_image,
     get_device,
     remove_background,
-    save_with_white_bg,
-    save_debug_overlay,
 )
 from dissector.backend import SAM3Factory
 

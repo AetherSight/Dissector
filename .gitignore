@@ -5,5 +5,7 @@ __pycache__
 .DS_Store
 !.gitkeep
 *.pt
-env/*/output/*.png
+env/*/output/
+env/*/*.jpg
 otherlib
+env/mac/*.lock
