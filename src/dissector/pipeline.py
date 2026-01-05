@@ -165,6 +165,7 @@ def mask_from_boxes(
     min_area_ratio: float = 0.001,
     save_debug: bool = False,
     debug_prefix: str = "",
+    debug_dir: str = "",
 ) -> np.ndarray:
     """
     从边界框列表生成 mask（优化版：支持批量处理）
@@ -221,10 +222,10 @@ def mask_from_boxes(
         if np.sum(mask) == 0:
             continue
 
-        if save_debug and debug_prefix:
+        if save_debug and debug_prefix and debug_dir:
             mask_vis = (mask.astype(np.uint8)) * 255
-            debug_path = os.path.join(os.path.dirname(os.path.dirname(image_path)) if hasattr(image_pil, 'filename') else ".", "tmp", f"{debug_prefix}_box_{i}_mask.png")
-            os.makedirs(os.path.dirname(debug_path), exist_ok=True)
+            debug_path = os.path.join(debug_dir, f"{debug_prefix}_box_{i}_mask.png")
+            os.makedirs(debug_dir, exist_ok=True)
             cv2.imwrite(debug_path, mask_vis)
             logger.info(f"Saved individual mask: {debug_path}")
 
@@ -237,10 +238,10 @@ def mask_from_boxes(
     if mask_total is None:
         return np.zeros((h, w), dtype=bool)
 
-    if save_debug and debug_prefix:
+    if save_debug and debug_prefix and debug_dir:
         mask_vis = (mask_total.astype(np.uint8)) * 255
-        debug_path = os.path.join(os.path.dirname(os.path.dirname(image_path)) if hasattr(image_pil, 'filename') else ".", "tmp", f"{debug_prefix}_merged_mask.png")
-        os.makedirs(os.path.dirname(debug_path), exist_ok=True)
+        debug_path = os.path.join(debug_dir, f"{debug_prefix}_merged_mask.png")
+        os.makedirs(debug_dir, exist_ok=True)
         cv2.imwrite(debug_path, mask_vis)
         logger.info(f"Saved merged mask: {debug_path}")
 
@@ -447,6 +448,11 @@ def process_image(
 
     masks: Dict[str, np.ndarray] = {}
 
+    # 创建 tmp 目录用于保存中间 mask
+    tmp_dir = os.path.join(os.path.dirname(image_path), "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    
     def detect_and_store(key: str, prompts: List[str]):
         """原本的 detect_and_store 函数，用于 ultralytics 后端"""
         dino_res = run_grounding_dino(
@@ -459,8 +465,7 @@ def process_image(
             text_threshold=text_threshold,
         )
         boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-        base_name = os.path.splitext(os.path.basename(image_path))[0]
-        masks[key] = mask_from_boxes(image_pil, boxes, sam3_model, save_debug=True, debug_prefix=f"{base_name}_{key}")
+        masks[key] = mask_from_boxes(image_pil, boxes, sam3_model, save_debug=True, debug_prefix=f"{base_name}_{key}", debug_dir=tmp_dir)
 
     # Ultralytics 后端：按照原本的顺序处理
     # 注意：MLX 后端已在上面通过 segment_parts 处理并返回
@@ -512,18 +517,13 @@ def process_image(
     masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
     masks["upper"] = clean_mask(masks["upper"], min_area_ratio=0.001)
     
-    # 保存中间 mask 图片到 tmp 目录
-    tmp_dir = os.path.join(os.path.dirname(image_path), "tmp")
-    os.makedirs(tmp_dir, exist_ok=True)
-    base_name = os.path.splitext(os.path.basename(image_path))[0]
-    
-    # 保存每个部位的 mask
+    # 保存每个部位的最终 mask 到 tmp 目录
     for key in ["shoes", "lower_raw", "lower", "head", "upper_raw", "upper", "hands"]:
         if key in masks:
             mask_vis = (masks[key].astype(np.uint8)) * 255
-            mask_path = os.path.join(tmp_dir, f"{base_name}_{key}_mask.png")
+            mask_path = os.path.join(tmp_dir, f"{base_name}_{key}_final_mask.png")
             cv2.imwrite(mask_path, mask_vis)
-            logger.info(f"Saved mask: {mask_path}")
+            logger.info(f"Saved final mask: {mask_path}")
     
     results: Dict[str, str] = {}
     outputs = [
