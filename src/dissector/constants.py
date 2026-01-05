@@ -42,7 +42,7 @@ BODY_PARTS_PROMPTS_MIX = {
     ],
 }
 
-# 身体部位提示词 - Ultralytics 后端（完整版）
+# 身体部位提示词 - Ultralytics 后端（完整版，保留作为备选）
 BODY_PARTS_PROMPTS_ULTRA = {
     "upper": [
         "upper body clothing",
@@ -79,6 +79,10 @@ BODY_PARTS_PROMPTS_ULTRA = {
         "garment body",
         "clothing fabric",
         "inner lining",
+    ],
+    "lower_negation_for_upper": [
+        "leg",
+        "pants",
     ],
     "lower": [
         "leg",

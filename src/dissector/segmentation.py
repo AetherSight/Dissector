@@ -316,10 +316,13 @@ def segment_parts_mlx(
     return results
 
 def get_prompts_for_backend(backend_name: str, part_name: str) -> List[str]:
-    if backend_name == "mlx":
-        return BODY_PARTS_PROMPTS_MIX.get(part_name, [])
-    else:
-        return BODY_PARTS_PROMPTS_ULTRA.get(part_name, [])
+    """
+    获取后端对应的提示词
+    现在Ultralytics也使用MIX的提示词（精简版），与MLX保持一致
+    ULTRA的提示词保留作为备选
+    """
+    # 统一使用MIX的提示词，保持与MLX一致
+    return BODY_PARTS_PROMPTS_MIX.get(part_name, [])
 
 
 def segment_parts_ultralytics(
@@ -331,7 +334,10 @@ def segment_parts_ultralytics(
     box_threshold: float,
     text_threshold: float,
 ) -> Dict[str, str]:
-    """Ultralytics 后端的分割函数"""
+    """
+    Ultralytics 后端的分割函数
+    采用类似MLX的策略：先检测头手腿脚，然后从整个人体mask中减去这些部位得到upper
+    """
     # 延迟导入避免循环导入
     from .pipeline import run_grounding_dino
     
@@ -356,6 +362,7 @@ def segment_parts_ultralytics(
 
     backend_name = sam3_model.backend_name
 
+    # 第一步：检测各个部位（头、手、腿、脚）
     logger.debug("[STEP] detecting shoes ...")
     detect_and_store("shoes", get_prompts_for_backend(backend_name, "shoes"))
 
@@ -373,20 +380,7 @@ def segment_parts_ultralytics(
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["head"] = head_mask
 
-    logger.debug("[STEP] detecting upper ...")
-    detect_and_store("upper_raw", get_prompts_for_backend(backend_name, "upper"))
-    upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
-    upper_mask = (
-        upper_mask
-        & (~masks.get("lower", np.zeros_like(upper_mask)))
-        & (~masks.get("shoes", np.zeros_like(upper_mask)))
-        & (~masks.get("head", np.zeros_like(upper_mask)))
-    )
-    upper_mask = clean_mask(upper_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
-    masks["upper"] = upper_mask
-    masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=DEFAULT_MIN_AREA_RATIO)
-
-    logger.debug("[STEP] detecting hands (remove from upper)...")
+    logger.debug("[STEP] detecting hands (for removal) ...")
     detect_and_store("hands", get_prompts_for_backend(backend_name, "hands"))
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = clean_mask(hand_mask, min_area_ratio=HANDS_MIN_AREA_RATIO)
@@ -395,8 +389,62 @@ def segment_parts_ultralytics(
         hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["hands"] = hand_mask
 
-    masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
-    masks["upper"] = clean_mask(masks["upper"], min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    # 检测 lower_negation_for_upper（类似MLX的逻辑）
+    logger.debug("[STEP] detecting lower_negation_for_upper ...")
+    lower_negation_prompts = get_prompts_for_backend(backend_name, "lower_negation_for_upper")
+    if lower_negation_prompts:
+        detect_and_store("lower_negation_for_upper", lower_negation_prompts)
+        lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
+        if np.sum(lower_negation_mask) == 0:
+            # 如果检测失败，使用lower作为fallback
+            lower_negation_mask = masks.get("lower", np.zeros((h, w), dtype=bool)).copy()
+        masks["lower_negation_for_upper"] = lower_negation_mask
+    else:
+        # 如果没有定义lower_negation_for_upper，使用lower作为替代
+        masks["lower_negation_for_upper"] = masks.get("lower", np.zeros((h, w), dtype=bool))
+
+    # 第二步：检测整个人体（类似MLX的做法）
+    logger.debug("[STEP] detecting person/full body ...")
+    person_prompts = ["person", "full body", "outfit", "garment", "human"]
+    detect_and_store("person", person_prompts)
+    person_mask = masks.get("person", np.zeros((h, w), dtype=bool))
+    
+    # 如果人体检测失败，使用已检测的部位组合作为fallback
+    if np.sum(person_mask) == 0:
+        logger.debug("[STEP] person detection failed, using parts combination as fallback")
+        for part_name in ["lower", "shoes", "head", "hands"]:
+            if part_name in masks:
+                person_mask |= masks[part_name]
+
+    # 第三步：计算upper - 采用两种方法并合并（类似MLX）
+    # 方法1：直接检测upper，然后减去其他部位（包括lower_negation_for_upper）
+    logger.debug("[STEP] detecting upper (direct method) ...")
+    detect_and_store("upper_raw", get_prompts_for_backend(backend_name, "upper"))
+    upper_detected = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
+    lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
+    
+    upper_detected_cleaned = upper_detected.copy()
+    upper_detected_cleaned = upper_detected_cleaned & (~lower_negation_mask)
+    for part_name in ["shoes", "head", "hands"]:
+        if part_name in masks:
+            upper_detected_cleaned = upper_detected_cleaned & (~masks[part_name])
+    
+    # 方法2：从整个人体mask中减去其他部位得到upper（MLX策略）
+    logger.debug("[STEP] computing upper from person mask subtraction ...")
+    upper_from_subtraction = person_mask.copy()
+    upper_from_subtraction = upper_from_subtraction & (~lower_negation_mask)
+    for part_name in ["shoes", "head", "hands"]:
+        if part_name in masks:
+            upper_from_subtraction = upper_from_subtraction & (~masks[part_name])
+    
+    # 合并两种方法的结果
+    upper_mask = upper_detected_cleaned | upper_from_subtraction
+    upper_mask = clean_mask(upper_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks["upper"] = upper_mask
+    
+    # 清理其他mask
+    masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    
     results: Dict[str, str] = {}
     outputs = [
         ("upper", "upper"),
