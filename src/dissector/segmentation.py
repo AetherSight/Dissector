@@ -8,8 +8,8 @@ import cv2
 from PIL import Image
 from typing import Dict, Optional, List
 import base64
-import torch
 import logging
+import os
 
 from .backend import SAM3Base
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
@@ -138,8 +138,6 @@ BODY_PARTS_PROMPTS_ULTRA = {
     ],
 }
 
-BODY_PARTS_PROMPTS = BODY_PARTS_PROMPTS_MIX
-
 def white_bg(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
     if np.sum(mask) == 0:
         return np.full_like(image_bgr, 255, dtype=np.uint8)
@@ -214,10 +212,6 @@ def mask_from_boxes(
     Returns:
         Binary mask as numpy array
     """
-    import os
-    import logging
-    logger = logging.getLogger(__name__)
-    
     if boxes.size == 0:
         h, w = image_pil.size[1], image_pil.size[0]
         return np.zeros((h, w), dtype=bool)
@@ -285,49 +279,6 @@ def mask_from_boxes(
     mask_total = clean_mask(mask_total, min_area_ratio=min_area_ratio)
     return mask_total
 
-
-def dino_detect(
-    image_pil: Image.Image,
-    prompts: List[str],
-    processor,
-    dino_model,
-    device: torch.device,
-    box_threshold: float = 0.3,
-    text_threshold: float = 0.25,
-) -> np.ndarray:
-    text = ". ".join(prompts) + "."
-    inputs = processor(images=image_pil, text=text, return_tensors="pt").to(device)
-    with torch.no_grad():
-        outputs = dino_model(**inputs)
-    
-    width, height = image_pil.size
-    target_sizes = torch.tensor([[height, width]], device=device)
-    
-    try:
-        results = processor.post_process_grounded_object_detection(
-            outputs,
-            input_ids=inputs["input_ids"],
-            threshold=box_threshold,
-            text_threshold=text_threshold,
-            target_sizes=target_sizes,
-        )[0]
-    except TypeError:
-        try:
-            results = processor.post_process_grounded_object_detection(
-                outputs,
-                input_ids=inputs["input_ids"],
-                threshold=box_threshold,
-                target_sizes=target_sizes,
-            )[0]
-        except TypeError:
-            results = processor.post_process_object_detection(
-                outputs,
-                threshold=box_threshold,
-                target_sizes=target_sizes,
-            )[0]
-    
-    boxes = results["boxes"].cpu().numpy() if "boxes" in results else np.array([])
-    return boxes
 
 def segment_parts_mlx(
     image_pil: Image.Image,
