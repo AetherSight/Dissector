@@ -381,96 +381,6 @@ def segment_parts_mlx(
     
     return results
 
-def segment_parts_ultralytics(
-    image_pil: Image.Image,
-    sam3_model: SAM3Base,
-    processor=None,
-    dino_model=None,
-    device: Optional[torch.device] = None,
-    box_threshold: float = 0.3,
-    text_threshold: float = 0.25,
-) -> Dict[str, str]:
-    image_rgb = np.array(image_pil)
-    image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-    h, w = image_rgb.shape[:2]
-    
-    results: Dict[str, str] = {}
-    prompts_dict = BODY_PARTS_PROMPTS_ULTRA
-    masks_dict: Dict[str, np.ndarray] = {}
-    
-    def detect_and_store(key: str, prompts: List[str]):
-        boxes = dino_detect(
-            image_pil=image_pil,
-            prompts=prompts,
-            processor=processor,
-            dino_model=dino_model,
-            device=device,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-        )
-        if boxes.size > 0:
-            mask = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
-            if mask is not None and mask.size > 0:
-                if mask.shape != (h, w):
-                    mask_uint8 = (mask.astype(np.uint8) * 255) if mask.dtype == bool else mask.astype(np.uint8)
-                    mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-                masks_dict[key] = mask
-            else:
-                masks_dict[key] = np.zeros((h, w), dtype=bool)
-        else:
-            masks_dict[key] = np.zeros((h, w), dtype=bool)
-    
-    detect_and_store("shoes", prompts_dict.get("shoes", []))
-    
-    detect_and_store("lower_raw", prompts_dict.get("lower", []))
-    lower_mask = masks_dict.get("lower_raw", np.zeros((h, w), dtype=bool))
-    lower_mask = lower_mask & (~masks_dict.get("shoes", np.zeros_like(lower_mask)))
-    masks_dict["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
-    
-    detect_and_store("head", prompts_dict.get("head", []))
-    head_mask = masks_dict.get("head", np.zeros((h, w), dtype=bool))
-    if np.any(head_mask):
-        kernel = np.ones((15, 15), np.uint8)
-        head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
-    masks_dict["head"] = head_mask
-    
-    detect_and_store("upper_raw", prompts_dict.get("upper", []))
-    upper_mask = masks_dict.get("upper_raw", np.zeros((h, w), dtype=bool))
-    upper_mask = (
-        upper_mask
-        & (~masks_dict.get("lower", np.zeros_like(upper_mask)))
-        & (~masks_dict.get("shoes", np.zeros_like(upper_mask)))
-        & (~masks_dict.get("head", np.zeros_like(upper_mask)))
-    )
-    upper_mask = clean_mask(upper_mask, min_area_ratio=0.001)
-    masks_dict["upper"] = upper_mask
-    masks_dict["shoes"] = clean_mask(masks_dict.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
-    
-    detect_and_store("hands", prompts_dict.get("hands", []))
-    hand_mask = masks_dict.get("hands", np.zeros((h, w), dtype=bool))
-    hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
-    if np.any(hand_mask):
-        kernel = np.ones((5, 5), np.uint8)
-        hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
-    masks_dict["hands"] = hand_mask
-    
-    masks_dict["upper"] = masks_dict.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
-    masks_dict["upper"] = clean_mask(masks_dict["upper"], min_area_ratio=0.001)
-    
-    outputs = [
-        ("upper", "upper"),
-        ("lower", "lower"),
-        ("shoes", "shoes"),
-        ("head", "head"),
-        ("hands", "hands"),
-    ]
-    for key, name in outputs:
-        mask_part = masks_dict.get(key, np.zeros((h, w), dtype=bool))
-        cropped_img = white_bg(image_bgr, mask_part)
-        results[name] = encode_image(cropped_img, ext=".jpg")
-    
-    return results
-
 def segment_parts(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
@@ -480,23 +390,13 @@ def segment_parts(
     box_threshold: float = 0.3,
     text_threshold: float = 0.25,
 ) -> Dict[str, str]:
-    if sam3_model.backend_name == "mlx":
-        return segment_parts_mlx(
-            image_pil=image_pil,
-            sam3_model=sam3_model,
-            processor=processor,
-            dino_model=dino_model,
-            device=device,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-        )
-    else:
-        return segment_parts_ultralytics(
-            image_pil=image_pil,
-            sam3_model=sam3_model,
-            processor=processor,
-            dino_model=dino_model,
-            device=device,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-        )
+    # segment_parts 只用于 MLX 后端，ultralytics 后端使用 process_image_ultralytics
+    return segment_parts_mlx(
+        image_pil=image_pil,
+        sam3_model=sam3_model,
+        processor=processor,
+        dino_model=dino_model,
+        device=device,
+        box_threshold=box_threshold,
+        text_threshold=text_threshold,
+    )
