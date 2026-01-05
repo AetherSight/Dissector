@@ -352,62 +352,6 @@ def remove_background(
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def save_with_white_bg(image_bgr: np.ndarray, mask: np.ndarray, output_path: str):
-    out = white_bg(image_bgr, mask)
-    if out is None or out.size == 0:
-        logger.warning(f"mask is empty, skip save: {output_path}")
-        return
-    cv2.imwrite(output_path, out)
-    logger.info(f"saved: {output_path}")
-
-
-def save_debug_overlay(image_bgr: np.ndarray, mask: np.ndarray, output_path: str, color: Tuple[int, int, int], title: str):
-    vis = image_bgr.copy()
-    overlay = vis.copy()
-    overlay[mask] = color
-    vis = cv2.addWeighted(vis, 0.65, overlay, 0.35, 0)
-    mask_uint8 = (mask.astype(np.uint8)) * 255
-    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(vis, contours, -1, color, 2)
-    cv2.putText(vis, title, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-    cv2.imwrite(output_path, vis)
-
-
-def process_image_simple(
-    image_pil: Image.Image,
-    sam3_model: SAM3Base,
-    processor: Optional[AutoProcessor] = None,
-    dino_model: Optional[AutoModelForZeroShotObjectDetection] = None,
-    device: Optional[torch.device] = None,
-    box_threshold: float = 0.3,
-    text_threshold: float = 0.25,
-) -> Dict[str, str]:
-    """
-    简化的图片处理函数：传入图片，返回5个部位的抠图（base64编码）
-    
-    Args:
-        image_pil: PIL Image 对象（RGB格式）
-        sam3_model: SAM3Base 实例
-        processor: DINO processor（仅 Ultralytics 需要）
-        dino_model: DINO model（仅 Ultralytics 需要）
-        device: PyTorch device（仅 Ultralytics 需要）
-        box_threshold: DINO 框阈值（仅 Ultralytics 需要）
-        text_threshold: DINO 文本阈值（仅 Ultralytics 需要）
-    
-    Returns:
-        字典，包含5个部位的 base64 编码图片
-    """
-    return segment_parts(
-        image_pil=image_pil,
-        sam3_model=sam3_model,
-        processor=processor,
-        dino_model=dino_model,
-        device=device,
-        box_threshold=box_threshold,
-        text_threshold=text_threshold,
-    )
-
-
 def process_image_ultralytics(
     image_path: str,
     processor: AutoProcessor,
