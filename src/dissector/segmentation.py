@@ -28,6 +28,7 @@ from .constants import (
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)  # Hide DEBUG output from segmentation module
 
 def white_bg(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
     if np.sum(mask) == 0:
@@ -433,12 +434,12 @@ def segment_parts_ultralytics(
     masks["head"] = head_mask
     
     if False:
-        detect_and_store("debug", ["hair", "hairband", "ear", "earring"])
-        test_mask = masks.get("test_mask", np.zeros((h, w), dtype=bool))
+        detect_and_store("debug", ["triangular ears"])
+        debug_mask = masks.get("debug", np.zeros((h, w), dtype=bool))
         tmp_dir = tempfile.gettempdir()
-        test_mask_vis = (test_mask.astype(np.uint8)) * 255
-        debug_path = os.path.join(tmp_dir, "test_mask_debug.png")
-        cv2.imwrite(debug_path, test_mask_vis)
+        debug_mask_vis = (debug_mask.astype(np.uint8)) * 255
+        debug_path = os.path.join(tmp_dir, "debug_mask.png")
+        cv2.imwrite(debug_path, debug_mask_vis)
         logger.info(f"Saved test-only mask debug image: {debug_path}")
 
     logger.debug("[STEP] detecting hands ...")
