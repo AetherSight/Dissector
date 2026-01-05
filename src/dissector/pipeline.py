@@ -470,59 +470,19 @@ def process_image(
     # Ultralytics 后端：按照原本的顺序处理
     # 注意：MLX 后端已在上面通过 segment_parts 处理并返回
     logger.info("[STEP] detecting shoes ...")
-    # 使用原本的 FOOTWEAR_PROMPTS，顺序和内容必须与原本代码完全一致
-    FOOTWEAR_PROMPTS: List[str] = [
-        "shoe",
-        "shoes",
-        "boot",
-        "boots",
-        "sandal",
-        "sneaker",
-        "high heel",
-        "flat shoe",
-    ]
+    backend_name = sam3_model.backend_name
+    FOOTWEAR_PROMPTS = get_prompts_for_backend(backend_name, "shoes")
     detect_and_store("shoes", FOOTWEAR_PROMPTS)
 
     logger.info("[STEP] detecting lower ...")
-    # 使用原本的 LOWER_PROMPTS，顺序和内容必须与原本代码完全一致
-    LOWER_PROMPTS: List[str] = [
-        "pants",
-        "trousers",
-        "jeans",
-        "slacks",
-        "shorts",
-        "leggings",
-        "tights",
-        "pant legs",
-        "trouser legs",
-        "pant waist",
-    ]
+    LOWER_PROMPTS = get_prompts_for_backend(backend_name, "lower")
     detect_and_store("lower_raw", LOWER_PROMPTS)
     lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
     masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
 
     logger.info("[STEP] detecting head (for removal) ...")
-    # 使用原本的 HEADWEAR_PROMPTS，顺序和内容必须与原本代码完全一致
-    HEADWEAR_PROMPTS: List[str] = [
-        "head",
-        "human head",
-        "face",
-        "facial area",
-        "hair",
-        "hairstyle",
-        "ponytail hair",
-        "cat ear",
-        "animal ear",
-        "headwear",
-        "hat",
-        "cap",
-        "helmet",
-        "crown",
-        "tiara",
-        "headband",
-        "hood",
-    ]
+    HEADWEAR_PROMPTS = get_prompts_for_backend(backend_name, "head")
     detect_and_store("head", HEADWEAR_PROMPTS)
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
     if np.any(head_mask):
@@ -531,36 +491,7 @@ def process_image(
     masks["head"] = head_mask
 
     logger.info("[STEP] detecting upper ...")
-    # 使用原本的 UPPER_PROMPTS，顺序和内容必须与原本代码完全一致
-    UPPER_PROMPTS: List[str] = [
-        "upper body clothing",
-        "upper garment",
-        "top",
-        "shirt",
-        "blouse",
-        "jacket",
-        "coat",
-        "sweater",
-        "cardigan",
-        "hoodie",
-        "tunic",
-        "vest",
-        "armor chest",
-        "breastplate",
-        "dress bodice",
-        "dress top",
-        "upper part of dress",
-        "sleeve",
-        "long sleeve",
-        "short sleeve",
-        "arm guard",
-        "bracer",
-        "arm band",
-        "arm accessory",
-        "garment body",
-        "clothing fabric",
-        "inner lining",
-    ]
+    UPPER_PROMPTS = get_prompts_for_backend(backend_name, "upper")
     detect_and_store("upper_raw", UPPER_PROMPTS)
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     upper_mask = (
@@ -574,18 +505,7 @@ def process_image(
     masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
     logger.info("[STEP] detecting hands (remove from upper)...")
-    # 使用原本的 HAND_PROMPTS，顺序和内容必须与原本代码完全一致
-    HAND_PROMPTS: List[str] = [
-        "human hand",
-        "hands",
-        "palm",
-        "fingers",
-        "bare hand",
-        "bare fingers",
-        "gloves",
-        "ring",
-        "hand accessory",
-    ]
+    HAND_PROMPTS = get_prompts_for_backend(backend_name, "hands")
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
