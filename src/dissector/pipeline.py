@@ -185,23 +185,8 @@ def mask_from_boxes(
 
     h, w = image_pil.size[1], image_pil.size[0]
     
-    if hasattr(sam3_model, 'generate_mask_from_bboxes') and len(boxes) > 1:
-        logger.info(f"[SAM3] Attempting batch processing for {len(boxes)} boxes")
-        try:
-            mask_total = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
-            if mask_total is not None and mask_total.ndim == 2 and mask_total.shape == (h, w):
-                kernel = np.ones((3, 3), np.uint8)
-                mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
-                mask_total = clean_mask(mask_total, min_area_ratio=min_area_ratio)
-                logger.info(f"[SAM3] Batch processing succeeded for {len(boxes)} boxes")
-                return mask_total
-            else:
-                logger.warning(f"[SAM3] Batch processing returned invalid mask (shape: {mask_total.shape if mask_total is not None else None}), falling back to loop")
-        except Exception as e:
-            logger.warning(f"[SAM3] Batch processing failed: {e}, falling back to loop", exc_info=True)
-    elif len(boxes) > 1:
-        logger.warning(f"[SAM3] Batch processing not available (hasattr: {hasattr(sam3_model, 'generate_mask_from_bboxes')}), using loop for {len(boxes)} boxes")
-    
+    # 禁用批量处理，强制使用循环处理，确保与原本行为一致
+    # 批量处理可能导致多个 boxes 的 mask 错误合并
     mask_total = None
     individual_masks = []
     for i, box in enumerate(boxes):
@@ -688,7 +673,7 @@ def process_image(
     masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
     logger.info("[STEP] detecting hands (remove from upper)...")
-    HAND_PROMPTS = get_prompts_for_backend(backend_name, "hands")
+    HAND_PROMPTS = ç(backend_name, "hands")
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
