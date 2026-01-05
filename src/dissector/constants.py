@@ -100,6 +100,7 @@ BODY_PARTS_PROMPTS_ULTRA = {
         "human head",
         "face",
         "facial area",
+        "head hair accessory",
         "hair",
         "hairstyle",
         "ponytail hair",
