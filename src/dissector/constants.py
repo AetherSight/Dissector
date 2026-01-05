@@ -13,6 +13,7 @@ BODY_PARTS_PROMPTS_MIX = {
         "accessory",
         "dress",
         "skirt",
+        "clothing strap"
     ],
     "lower_negation_for_upper": [
         "leg",
