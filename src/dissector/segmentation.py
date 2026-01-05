@@ -12,13 +12,6 @@ import torch
 
 from .backend import SAM3Base
 
-def estimate_tokens(text: str) -> int:
-    word_count = len(text.split())
-    char_count = len(text)
-    tokens_by_words = int(word_count * 1.33) + 1
-    tokens_by_chars = int(char_count / 4) + 1
-    return max(tokens_by_words, tokens_by_chars)
-
 BODY_PARTS_PROMPTS_MIX = {
     "upper": [
         "upper body clothing",
