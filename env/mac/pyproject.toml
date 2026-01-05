@@ -30,5 +30,5 @@ torchvision = ">=0.24.1"
 # macOS: MLX backend
 mlx = ">=0.30.0"
 mlx-lm = ">=0.30.0"
-mlx-sam3 = {git = "https://github.com/Deekshith-Dade/mlx_sam3.git"}
+mlx-sam3 = {path = "mlx_sam3"}
 
