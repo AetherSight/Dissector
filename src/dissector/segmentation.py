@@ -627,25 +627,36 @@ def segment_parts_ultralytics(
     person_mask = masks.get("person", np.zeros((h, w), dtype=bool))
     upper_detected = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
+    lower_mask_for_upper = masks.get("lower", np.zeros((h, w), dtype=bool))
     
-    upper_detected_cleaned = upper_detected.copy()
-    upper_detected_cleaned = upper_detected_cleaned & (~lower_negation_mask)
+    # upper: 正常流程得到的 upper，不和 lower_negation_for_upper 取反，但要和头、手、鞋取反
+    upper_original = upper_detected.copy()
+    # 排除 shoes, head, hands
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks:
-            upper_detected_cleaned = upper_detected_cleaned & (~masks[part_name])
+            upper_original = upper_original & (~masks[part_name])
+    upper_original = clean_mask(upper_original, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks["upper"] = upper_original
     
-    logger.debug("[STEP] computing upper from person mask subtraction ...")
-    upper_from_subtraction = person_mask.copy()
-    upper_from_subtraction = upper_from_subtraction & (~lower_negation_mask)
+    # upper_1: 和 lower_negation_for_upper 取反
+    upper_1 = upper_detected.copy()
+    upper_1 = upper_1 & (~lower_negation_mask)
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks:
-            upper_from_subtraction = upper_from_subtraction & (~masks[part_name])
+            upper_1 = upper_1 & (~masks[part_name])
+    upper_1 = clean_mask(upper_1, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks["upper_1"] = upper_1
     
-    upper_mask = upper_detected_cleaned | upper_from_subtraction
-    upper_mask = clean_mask(upper_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
-    masks["upper"] = upper_mask
+    # upper_2: 和 lower 取反
+    upper_2 = upper_detected.copy()
+    upper_2 = upper_2 & (~lower_mask_for_upper)
+    for part_name in ["shoes", "head", "hands"]:
+        if part_name in masks:
+            upper_2 = upper_2 & (~masks[part_name])
+    upper_2 = clean_mask(upper_2, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks["upper_2"] = upper_2
     
-    masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks["shoes"] = clean_mask(masks.get("shoes", np.zeros((h, w), dtype=bool)), min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     
     results: Dict[str, str] = {}
     outputs = [
@@ -659,6 +670,17 @@ def segment_parts_ultralytics(
         mask_part = masks.get(key, np.zeros((h, w), dtype=bool))
         out_img = white_bg(image_bgr, mask_part)
         results[name] = encode_image(out_img, ext=".jpg")
+    
+    # 添加 upper 的变体到结果中
+    # upper: 已经在上面处理了（正常流程，不取反）
+    # upper_1: 和 lower_negation_for_upper 取反
+    # upper_2: 和 lower 取反
+    for variant_name in ["upper_1", "upper_2"]:
+        if variant_name in masks:
+            mask = masks[variant_name]
+            cropped_img = white_bg(image_bgr, mask)
+            results[variant_name] = encode_image(cropped_img, ext=".jpg")
+    
     return results
 
 
