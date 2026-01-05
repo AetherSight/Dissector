@@ -320,7 +320,10 @@ def segment_parts(
     
     use_dino = sam3_model.backend_name == "ultralytics" and processor is not None and dino_model is not None
     
-    prompts_dict = BODY_PARTS_PROMPTS_CORE
+    if sam3_model.backend_name == "mlx":
+        prompts_dict = BODY_PARTS_PROMPTS_CORE
+    else:
+        prompts_dict = BODY_PARTS_PROMPTS_FULL
     
     masks_dict: Dict[str, np.ndarray] = {}
     
