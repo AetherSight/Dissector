@@ -38,35 +38,33 @@ def get_device() -> torch.device:
 
 
 def load_models(
-    dino_model_name: str,
     device: torch.device,
     sam3_backend: Optional[str] = None,
 ) -> Tuple[AutoProcessor, AutoModelForZeroShotObjectDetection, SAM3Base]:
-    """
-    Load models for image processing.
-    
-    Args:
-        dino_model_name: Grounding DINO model name
-        device: PyTorch device
-        sam3_backend: SAM3 backend type ("mlx" or "ultralytics"), None for auto-detect
-    
-    Returns:
-        Tuple of (processor, dino_model, sam3_model)
-    """
+    device_str = "cuda" if device.type == "cuda" else "cpu"
+    sam3_model = SAM3Factory.create(backend=sam3_backend, device=device_str)
+    logger.info(f"Loaded SAM3 model with backend: {sam3_model.backend_name}")
+
+    if sam3_model.backend_name == "mlx":
+        logger.info("MLX backend detected: skipping Grounding DINO loading.")
+        processor = None
+        dino_model = None
+        return processor, dino_model, sam3_model
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    dino_local_dir = os.path.join(project_root, "models", "grounding-dino-base")
+
+    logger.info(f"Loading Grounding DINO from local path: {dino_local_dir}")
+
     processor = AutoProcessor.from_pretrained(
-        dino_model_name,
+        dino_local_dir,
         local_files_only=True,
     )
     dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-        dino_model_name,
+        dino_local_dir,
         local_files_only=True,
     ).to(device)
-    
-    device_str = "cuda" if device.type == "cuda" else "cpu"
-    
-    sam3_model = SAM3Factory.create(backend=sam3_backend, device=device_str)
-    logger.info(f"Loaded SAM3 model with backend: {sam3_model.backend_name}")
-    
+
     return processor, dino_model, sam3_model
 
 
@@ -225,14 +223,13 @@ def process_image(
 def run_batch(
     input_dir: str,
     output_dir: str,
-    dino_model_name: str = "IDEA-Research/grounding-dino-base",
     box_threshold: float = 0.3,
     text_threshold: float = 0.25,
 ) -> List[Dict[str, str]]:
     device = get_device()
     logger.info(f"device: {device} (platform: {platform.system()})")
     logger.info("loading models ...")
-    processor, dino_model, sam3_model = load_models(dino_model_name, device)
+    processor, dino_model, sam3_model = load_models(device)
     logger.info("models loaded.")
 
     images = [

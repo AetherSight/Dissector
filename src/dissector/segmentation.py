@@ -10,6 +10,7 @@ from typing import Dict, Optional, List
 import base64
 import logging
 import os
+import tempfile
 import torch
 
 from .backend import SAM3Base
@@ -315,13 +316,24 @@ def segment_parts_mlx(
     
     return results
 
-def get_prompts_for_backend(backend_name: str, part_name: str) -> List[str]:
+def get_prompts_for_backend(backend_name: str, part_name: str):
     """
     获取后端对应的提示词
-    现在Ultralytics也使用MIX的提示词（精简版），与MLX保持一致
-    ULTRA的提示词保留作为备选
+    
+    Args:
+        backend_name: 后端名称 ("mlx" 或 "ultralytics")
+        part_name: 部位名称
+    
+    Returns:
+        可以是 List[str]（单轮检测）或 List[List[str]]（多轮检测）
+        对于 ultralytics 后端，如果 ULTRA 中有定义嵌套列表结构，则返回嵌套列表
+        否则返回 MIX 的普通列表
     """
-    # 统一使用MIX的提示词，保持与MLX一致
+    # 对于 ultralytics 后端，优先使用 ULTRA 的提示词（可能包含嵌套列表）
+    if backend_name == "ultralytics" and part_name in BODY_PARTS_PROMPTS_ULTRA:
+        return BODY_PARTS_PROMPTS_ULTRA.get(part_name, [])
+    
+    # 其他情况使用 MIX 的提示词（普通列表）
     return BODY_PARTS_PROMPTS_MIX.get(part_name, [])
 
 
@@ -347,22 +359,62 @@ def segment_parts_ultralytics(
 
     masks: Dict[str, np.ndarray] = {}
 
-    def detect_and_store(key: str, prompts: List[str]):
-        dino_res = run_grounding_dino(
-            image_pil=image_pil,
-            prompts=prompts,
-            processor=processor,
-            dino_model=dino_model,
-            device=device,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-        )
-        boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-        masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
+    def detect_and_store(key: str, prompts):
+        """
+        检测并存储 mask
+        
+        Args:
+            key: 存储的键名
+            prompts: 可以是以下两种格式：
+                - List[str]: 单轮检测，直接使用所有提示词
+                - List[List[str]]: 多轮检测，每轮检测后合并结果
+        """
+        # 检查 prompts 的类型
+        if not prompts:
+            masks[key] = np.zeros((h, w), dtype=bool)
+            return
+        
+        # 检查第一个元素是否是列表（判断是否为嵌套列表）
+        if isinstance(prompts[0], list):
+            # 多轮检测：分轮执行，每轮结果合并
+            mask_total = None
+            for round_idx, round_prompts in enumerate(prompts):
+                logger.debug(f"[ROUND {round_idx + 1}] detecting with prompts: {round_prompts}")
+                dino_res = run_grounding_dino(
+                    image_pil=image_pil,
+                    prompts=round_prompts,
+                    processor=processor,
+                    dino_model=dino_model,
+                    device=device,
+                    box_threshold=box_threshold,
+                    text_threshold=text_threshold,
+                )
+                boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
+                round_mask = mask_from_boxes(image_pil, boxes, sam3_model)
+                
+                # 合并到总 mask
+                if mask_total is None:
+                    mask_total = round_mask.copy()
+                else:
+                    mask_total |= round_mask
+            
+            masks[key] = mask_total if mask_total is not None else np.zeros((h, w), dtype=bool)
+        else:
+            # 单轮检测：直接使用所有提示词
+            dino_res = run_grounding_dino(
+                image_pil=image_pil,
+                prompts=prompts,
+                processor=processor,
+                dino_model=dino_model,
+                device=device,
+                box_threshold=box_threshold,
+                text_threshold=text_threshold,
+            )
+            boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
+            masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
 
     backend_name = sam3_model.backend_name
 
-    # 第一步：检测各个部位（头、手、腿、脚）
     logger.debug("[STEP] detecting shoes ...")
     detect_and_store("shoes", get_prompts_for_backend(backend_name, "shoes"))
 
@@ -372,15 +424,24 @@ def segment_parts_ultralytics(
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
     masks["lower"] = clean_mask(lower_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
 
-    logger.debug("[STEP] detecting head (for removal) ...")
+    logger.debug("[STEP] detecting head ...")
     detect_and_store("head", get_prompts_for_backend(backend_name, "head"))
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
     if np.any(head_mask):
         kernel = np.ones((HEAD_DILATE_KERNEL_SIZE, HEAD_DILATE_KERNEL_SIZE), np.uint8)
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["head"] = head_mask
+    
+    if False:
+        detect_and_store("debug", ["hair", "hairband", "ear", "earring"])
+        test_mask = masks.get("test_mask", np.zeros((h, w), dtype=bool))
+        tmp_dir = tempfile.gettempdir()
+        test_mask_vis = (test_mask.astype(np.uint8)) * 255
+        debug_path = os.path.join(tmp_dir, "test_mask_debug.png")
+        cv2.imwrite(debug_path, test_mask_vis)
+        logger.info(f"Saved test-only mask debug image: {debug_path}")
 
-    logger.debug("[STEP] detecting hands (for removal) ...")
+    logger.debug("[STEP] detecting hands ...")
     detect_and_store("hands", get_prompts_for_backend(backend_name, "hands"))
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = clean_mask(hand_mask, min_area_ratio=HANDS_MIN_AREA_RATIO)
@@ -389,37 +450,21 @@ def segment_parts_ultralytics(
         hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["hands"] = hand_mask
 
-    # 检测 lower_negation_for_upper（类似MLX的逻辑）
     logger.debug("[STEP] detecting lower_negation_for_upper ...")
     lower_negation_prompts = get_prompts_for_backend(backend_name, "lower_negation_for_upper")
-    if lower_negation_prompts:
-        detect_and_store("lower_negation_for_upper", lower_negation_prompts)
-        lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
-        if np.sum(lower_negation_mask) == 0:
-            # 如果检测失败，使用lower作为fallback
-            lower_negation_mask = masks.get("lower", np.zeros((h, w), dtype=bool)).copy()
-        masks["lower_negation_for_upper"] = lower_negation_mask
-    else:
-        # 如果没有定义lower_negation_for_upper，使用lower作为替代
-        masks["lower_negation_for_upper"] = masks.get("lower", np.zeros((h, w), dtype=bool))
+    detect_and_store("lower_negation_for_upper", lower_negation_prompts)
+    lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
+    masks["lower_negation_for_upper"] = lower_negation_mask
 
-    # 第二步：检测整个人体（类似MLX的做法）
     logger.debug("[STEP] detecting person/full body ...")
     person_prompts = ["person", "full body", "outfit", "garment", "human"]
     detect_and_store("person", person_prompts)
     person_mask = masks.get("person", np.zeros((h, w), dtype=bool))
     
-    # 如果人体检测失败，使用已检测的部位组合作为fallback
-    if np.sum(person_mask) == 0:
-        logger.debug("[STEP] person detection failed, using parts combination as fallback")
-        for part_name in ["lower", "shoes", "head", "hands"]:
-            if part_name in masks:
-                person_mask |= masks[part_name]
-
-    # 第三步：计算upper - 采用两种方法并合并（类似MLX）
-    # 方法1：直接检测upper，然后减去其他部位（包括lower_negation_for_upper）
     logger.debug("[STEP] detecting upper (direct method) ...")
     detect_and_store("upper_raw", get_prompts_for_backend(backend_name, "upper"))
+    
+    person_mask = masks.get("person", np.zeros((h, w), dtype=bool))
     upper_detected = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
     
@@ -429,7 +474,6 @@ def segment_parts_ultralytics(
         if part_name in masks:
             upper_detected_cleaned = upper_detected_cleaned & (~masks[part_name])
     
-    # 方法2：从整个人体mask中减去其他部位得到upper（MLX策略）
     logger.debug("[STEP] computing upper from person mask subtraction ...")
     upper_from_subtraction = person_mask.copy()
     upper_from_subtraction = upper_from_subtraction & (~lower_negation_mask)
@@ -437,12 +481,10 @@ def segment_parts_ultralytics(
         if part_name in masks:
             upper_from_subtraction = upper_from_subtraction & (~masks[part_name])
     
-    # 合并两种方法的结果
     upper_mask = upper_detected_cleaned | upper_from_subtraction
     upper_mask = clean_mask(upper_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks["upper"] = upper_mask
     
-    # 清理其他mask
     masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     
     results: Dict[str, str] = {}

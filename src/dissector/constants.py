@@ -46,6 +46,8 @@ BODY_PARTS_PROMPTS_MIX = {
 BODY_PARTS_PROMPTS_ULTRA = {
     **BODY_PARTS_PROMPTS_MIX,
     "head": [
+        "headwear",
+        "head accessory",
         "head",
         "hair",
         "face",
@@ -53,20 +55,8 @@ BODY_PARTS_PROMPTS_ULTRA = {
         "ear",
         "earring",
         "human head",
-        "facial area",
         "hair accessory",
-        "hairstyle",
-        "ponytail hair",
-        "cat ear",
-        "animal ear",
-        "headwear",
-        "hat",
-        "cap",
-        "helmet",
-        "crown",
-        "tiara",
-        "headband",
-        "hood",
+        "hair flower",
     ],
 }
 
