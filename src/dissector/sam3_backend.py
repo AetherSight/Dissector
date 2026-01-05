@@ -297,6 +297,7 @@ class MLXSAM3(SAM3Base):
             self._lock = threading.Lock()
             self._current_state = None
             self._current_image_id = None
+            self._image_state = None  # 保存原始的 image state，用于每次文本提示
             
         except ImportError as e:
             logger.error(f"Failed to import MLX SAM3: {e}")
@@ -324,7 +325,8 @@ class MLXSAM3(SAM3Base):
                 # 检查是否需要设置新图片
                 image_id = id(image_pil)
                 if self._current_image_id != image_id:
-                    self._current_state = self.processor.set_image(image_pil)
+                    self._image_state = self.processor.set_image(image_pil)
+                    self._current_state = self._image_state
                     self._current_image_id = image_id
                 
                 # 转换 bbox 为 MLX SAM3 格式: [center_x, center_y, width, height] 归一化到 [0, 1]
@@ -403,7 +405,8 @@ class MLXSAM3(SAM3Base):
                 # 设置图片（如果需要）
                 image_id = id(image_pil)
                 if self._current_image_id != image_id:
-                    self._current_state = self.processor.set_image(image_pil)
+                    self._image_state = self.processor.set_image(image_pil)
+                    self._current_state = self._image_state
                     self._current_image_id = image_id
                 
                 # 重置所有提示
@@ -486,12 +489,15 @@ class MLXSAM3(SAM3Base):
                 # 检查是否需要设置新图片
                 image_id = id(image_pil)
                 if self._current_image_id != image_id:
-                    self._current_state = self.processor.set_image(image_pil)
+                    self._image_state = self.processor.set_image(image_pil)
+                    self._current_state = self._image_state
                     self._current_image_id = image_id
                 
-                # 设置文本提示并运行推理
-                state = self.processor.set_text_prompt(text_prompt, self._current_state)
-                self._current_state = state
+                # 每次文本提示都基于原始的 image state，避免状态被覆盖
+                # 这样多个文本提示可以独立处理，然后在外部合并
+                base_state = self._image_state if self._image_state is not None else self._current_state
+                state = self.processor.set_text_prompt(text_prompt, base_state)
+                # 不更新 _current_state，保持 image state 不变
                 
                 # 从 state 中提取 mask
                 if "masks" in state:
