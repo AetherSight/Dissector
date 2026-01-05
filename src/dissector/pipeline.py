@@ -5,8 +5,6 @@ import platform
 import time
 import threading
 from typing import Dict, List, Tuple, Any, Optional
-# Parallel processing disabled to avoid SIGSEGV and resource leaks
-# from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -25,8 +23,17 @@ from PIL import Image
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 from .backend import SAM3Factory, SAM3Base
-from .segmentation import segment_body_parts_with_sam3, BODY_PARTS_PROMPTS
+from .segmentation import (
+    segment_parts,
+    BODY_PARTS_PROMPTS_CORE,
+    BODY_PARTS_PROMPTS_FULL,
+)
 
+def get_prompts_for_backend(backend_name: str, part_name: str) -> List[str]:
+    if backend_name == "mlx":
+        return BODY_PARTS_PROMPTS_CORE.get(part_name, [])
+    else:
+        return BODY_PARTS_PROMPTS_FULL.get(part_name, [])
 
 def get_device() -> torch.device:
     """
@@ -43,12 +50,6 @@ def get_device() -> torch.device:
     else:
         return torch.device("cpu")
 
-# 从 segmentation 导入统一的提示词源
-HEADWEAR_PROMPTS = BODY_PARTS_PROMPTS["head"]
-UPPER_PROMPTS = BODY_PARTS_PROMPTS["upper"]
-LOWER_PROMPTS = BODY_PARTS_PROMPTS["lower"]
-FOOTWEAR_PROMPTS = BODY_PARTS_PROMPTS["shoes"]
-HAND_PROMPTS = BODY_PARTS_PROMPTS["hands"]
 LEG_PROMPTS: List[str] = [
     "leg",
     "legs",
@@ -73,7 +74,6 @@ def load_models(
     Returns:
         Tuple of (processor, dino_model, sam3_model)
     """
-    # Disable downloading optional files to avoid 404 requests
     processor = AutoProcessor.from_pretrained(
         dino_model_name,
         local_files_only=True,
@@ -83,7 +83,6 @@ def load_models(
         local_files_only=True,
     ).to(device)
     
-    # 自动检测设备类型用于 Ultralytics
     device_str = None
     if device.type == "cuda":
         device_str = "cuda"
@@ -140,7 +139,7 @@ def run_grounding_dino(
     return results
 
 
-def remove_small_components(mask: np.ndarray, min_area_ratio: float = 0.001) -> np.ndarray:
+def clean_mask(mask: np.ndarray, min_area_ratio: float = 0.001) -> np.ndarray:
     if mask.dtype != np.uint8:
         mask_uint8 = mask.astype(np.uint8)
     else:
@@ -190,7 +189,7 @@ def mask_from_boxes(
             if mask_total is not None and mask_total.ndim == 2 and mask_total.shape == (h, w):
                 kernel = np.ones((3, 3), np.uint8)
                 mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
-                mask_total = remove_small_components(mask_total, min_area_ratio=min_area_ratio)
+                mask_total = clean_mask(mask_total, min_area_ratio=min_area_ratio)
                 logger.info(f"[SAM3] Batch processing succeeded for {len(boxes)} boxes")
                 return mask_total
             else:
@@ -229,11 +228,11 @@ def mask_from_boxes(
 
     kernel = np.ones((3, 3), np.uint8)
     mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
-    mask_total = remove_small_components(mask_total, min_area_ratio=min_area_ratio)
+    mask_total = clean_mask(mask_total, min_area_ratio=min_area_ratio)
     return mask_total
 
 
-def render_white_bg(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
+def white_bg(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
     if np.sum(mask) == 0:
         return np.full_like(image_bgr, 255, dtype=np.uint8)
 
@@ -256,7 +255,7 @@ def render_white_bg(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return cv2.add(fg, bg)
 
 
-def encode_bgr_to_base64(img_bgr: np.ndarray, ext: str = ".jpg") -> str:
+def encode_image(img_bgr: np.ndarray, ext: str = ".jpg") -> str:
     ok, buf = cv2.imencode(ext, img_bgr)
     if not ok:
         return ""
@@ -339,7 +338,7 @@ def remove_background(
 
 
 def save_with_white_bg(image_bgr: np.ndarray, mask: np.ndarray, output_path: str):
-    out = render_white_bg(image_bgr, mask)
+    out = white_bg(image_bgr, mask)
     if out is None or out.size == 0:
         logger.warning(f"mask is empty, skip save: {output_path}")
         return
@@ -383,7 +382,7 @@ def process_image_simple(
     Returns:
         字典，包含5个部位的 base64 编码图片
     """
-    return segment_body_parts_with_sam3(
+    return segment_parts(
         image_pil=image_pil,
         sam3_model=sam3_model,
         processor=processor,
@@ -391,6 +390,7 @@ def process_image_simple(
         device=device,
         box_threshold=box_threshold,
         text_threshold=text_threshold,
+        debug_output_dir="tmp",
     )
 
 
@@ -412,21 +412,21 @@ def process_image(
     image_pil = Image.fromarray(image_rgb)
     h, w = image_rgb.shape[:2]
 
-    # MLX 后端直接使用 segment_body_parts_with_sam3，不使用 DINO
     if sam3_model.backend_name == "mlx":
-        logger.info("[PERF] MLX backend: using segment_body_parts_with_sam3 (no DINO)")
+        logger.info("[PERF] MLX backend: using segment_parts (no DINO)")
         segment_start = time.time()
-        results = segment_body_parts_with_sam3(
+        results = segment_parts(
             image_pil=image_pil,
             sam3_model=sam3_model,
-            processor=None,  # MLX 不需要 DINO
+            processor=None,
             dino_model=None,
             device=None,
             box_threshold=box_threshold,
             text_threshold=text_threshold,
+            debug_output_dir="tmp",
         )
         segment_time = time.time() - segment_start
-        logger.info(f"[PERF] MLX segment_body_parts_with_sam3: {segment_time:.2f}s")
+        logger.info(f"[PERF] MLX segment_parts: {segment_time:.2f}s")
         return results
 
     masks: Dict[str, np.ndarray] = {}
@@ -452,68 +452,9 @@ def process_image(
         logger.info(f"[PERF] {key}: DINO={dino_time:.2f}s, SAM3={sam3_time:.2f}s, boxes={len(boxes)}")
     
     step_start = time.time()
-    # 尝试统一使用文本提示词叠加方式，不使用 DINO 批量检测
-    use_dino_batch = False  # 暂时禁用 DINO 批量检测，尝试文本提示词叠加
-    
-    if False:  # 禁用 DINO 批量检测
-        batch_prompts = (
-            # 整个人体
-            ["person", "human", "human body"] +
-
-            # shoes: 核心鞋类
-            ["shoe", "boot", "sneaker", "sandal"] +
-
-            # lower: 核心下装
-            ["pants", "trousers", "jeans", "shorts", "leggings"] +
-
-            # head: 头部、脸部、头发、头饰、耳部（精简但保留关键）
-            ["head", "human head", "face", "facial area", "hair accessory", "hair flower",
-            "hair", "hairstyle", "ponytail hair",
-            "hat", "cap", "helmet", "hood",
-            "headwear", "headpiece", "head accessory",
-            "hair accessory", "hair clip", "hairpin",
-            "wig", "beret", "beanie", "visor",
-            "bandana",
-            "ear", "ears", "human ear", "earring", "ear accessory",
-            "forehead", "cheek", "chin", "jaw"] +
-
-            # upper: 核心上装（包含下摆 / 长款 / 外袍）
-            ["upper body clothing", "upper garment", "top",
-            "shirt", "blouse", "jacket", "coat", "sweater", "hoodie",
-            "long coat", "long jacket", "robe", "tunic",
-            "sleeve", "long sleeve", "short sleeve",
-            "collar", "neckline", "scarf", "necklace",
-            "belt", "waistband",
-            "hem", "garment hem", "clothing hem", "bottom hem", "lower edge of clothing",
-            "lining", "inner lining"] +
-
-            # hands: 手部
-            ["hand", "hands", "human hand", "palm", "fingers"] +
-
-            # legs: 腿部
-            ["leg", "legs", "human leg", "thigh"]
-        )
-
- 
-        all_dino_res = run_grounding_dino(
-            image_pil=image_pil,
-            prompts=batch_prompts,
-            processor=processor,
-            dino_model=dino_model,
-            device=device,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-        )
-        all_boxes = all_dino_res["boxes"].cpu().numpy() if "boxes" in all_dino_res else np.array([])
-        all_labels = all_dino_res.get("labels", []) if "labels" in all_dino_res else []
-        batch_dino_time = time.time() - step_start
-        logger.info(f"[PERF] Batch DINO: {batch_dino_time:.2f}s, total boxes={len(all_boxes)}, labels={len(all_labels) if all_labels else 0}")
-        
-    else:
-        # MLX backend 不使用 DINO，直接使用文本提示词
-        all_boxes = np.array([])
-        all_labels = []
-        logger.info("[PERF] MLX backend: skipping DINO batch detection, using text prompts directly")
+    all_boxes = np.array([])
+    all_labels = []
+    logger.info("[PERF] MLX backend: skipping DINO batch detection, using text prompts directly")
     
     use_batch = len(all_boxes) > 0
     if use_batch and len(all_labels) != len(all_boxes):
@@ -545,7 +486,6 @@ def process_image(
         return key, masks.get(key, np.zeros((h, w), dtype=bool))
     
     def process_sam3_pipelined(key: str, prompts: List[str]):
-        """流水线化处理：CPU 预处理 + GPU 推理（针对 M1 Ultra 优化）"""
         step_start = time.time()
         
         if use_batch:
@@ -569,7 +509,12 @@ def process_image(
     logger.info("[STEP] Stage 1: detecting shoes, head, lower_raw, upper_raw (sequential)...")
     stage1_start = time.time()
     
-    # 顺序处理以避免 SIGSEGV 和资源泄漏
+    backend_name = sam3_model.backend_name
+    FOOTWEAR_PROMPTS = get_prompts_for_backend(backend_name, "shoes")
+    HEADWEAR_PROMPTS = get_prompts_for_backend(backend_name, "head")
+    LOWER_PROMPTS = get_prompts_for_backend(backend_name, "lower")
+    UPPER_PROMPTS = get_prompts_for_backend(backend_name, "upper")
+    
     if sam3_model.backend_name == "mlx":
         for key, prompts in [("shoes", FOOTWEAR_PROMPTS), ("head", HEADWEAR_PROMPTS), 
                               ("lower_raw", LOWER_PROMPTS), ("upper_raw", UPPER_PROMPTS)]:
@@ -613,7 +558,7 @@ def process_image(
     
     lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
-    masks["lower"] = remove_small_components(lower_mask, min_area_ratio=0.001)
+    masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     lower_mask_current = masks.get("lower", np.zeros_like(upper_mask))
     
@@ -636,14 +581,22 @@ def process_image(
                 masks["lower"] = lower_mask_current
     
     upper_mask = upper_mask & (~lower_mask_current)
-    upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
+    upper_mask = clean_mask(upper_mask, min_area_ratio=0.001)
     masks["upper"] = upper_mask
-    masks["shoes"] = remove_small_components(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
+    masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
     logger.info("[STEP] Stage 2: detecting legs and hands (sequential)...")
     stage2_start = time.time()
     
-    # 顺序处理以避免 SIGSEGV 和资源泄漏
+    HAND_PROMPTS = get_prompts_for_backend(backend_name, "hands")
+    LEG_PROMPTS: List[str] = [
+        "leg",
+        "legs",
+        "human leg",
+        "thigh",
+        "thighs",
+    ]
+    
     if sam3_model.backend_name == "mlx":
         for key, prompts in [("legs", LEG_PROMPTS), ("hands", HAND_PROMPTS)]:
             try:
@@ -677,19 +630,19 @@ def process_image(
     logger.info(f"[PERF] Stage 2 completed: {time.time()-stage2_start:.2f}s")
     
     leg_mask = masks.get("legs", np.zeros(image_rgb.shape[:2], dtype=bool))
-    leg_mask = remove_small_components(leg_mask, min_area_ratio=0.0005)
+    leg_mask = clean_mask(leg_mask, min_area_ratio=0.0005)
     
     if np.any(leg_mask) and np.any(upper_mask):
         leg_in_upper = leg_mask & upper_mask
         if np.any(leg_in_upper):
             upper_mask = upper_mask & (~leg_in_upper)
             masks["lower"] = masks.get("lower", np.zeros_like(leg_in_upper)) | leg_in_upper
-            masks["lower"] = remove_small_components(masks["lower"], min_area_ratio=0.001)
-            upper_mask = remove_small_components(upper_mask, min_area_ratio=0.001)
+            masks["lower"] = clean_mask(masks["lower"], min_area_ratio=0.001)
+            upper_mask = clean_mask(upper_mask, min_area_ratio=0.001)
             masks["upper"] = upper_mask
     
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
-    hand_mask = remove_small_components(hand_mask, min_area_ratio=0.0005)
+    hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
     
     if np.any(hand_mask) and np.any(masks.get("lower", np.zeros_like(hand_mask))):
         lower_mask = masks.get("lower", np.zeros_like(hand_mask))
@@ -706,7 +659,7 @@ def process_image(
     masks["hands"] = hand_mask
 
     masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
-    masks["upper"] = remove_small_components(masks["upper"], min_area_ratio=0.001)
+    masks["upper"] = clean_mask(masks["upper"], min_area_ratio=0.001)
     results: Dict[str, str] = {}
     outputs = [
         ("upper", "upper"),
@@ -718,8 +671,8 @@ def process_image(
     step_start = time.time()
     for key, name in outputs:
         mask_part = masks.get(key, np.zeros((h, w), dtype=bool))
-        out_img = render_white_bg(image_bgr, mask_part)
-        results[name] = encode_bgr_to_base64(out_img, ext=".jpg")
+        out_img = white_bg(image_bgr, mask_part)
+        results[name] = encode_image(out_img, ext=".jpg")
     encode_time = time.time() - step_start
     
     total_time = time.time() - start_time
