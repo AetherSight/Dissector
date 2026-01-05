@@ -429,25 +429,19 @@ def process_image_ultralytics(
         boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
         masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
 
-    # 从函数获取提示词
     backend_name = sam3_model.backend_name
-    FOOTWEAR_PROMPTS = get_prompts_for_backend(backend_name, "shoes")
-    LOWER_PROMPTS = get_prompts_for_backend(backend_name, "lower")
-    HEADWEAR_PROMPTS = get_prompts_for_backend(backend_name, "head")
-    UPPER_PROMPTS = get_prompts_for_backend(backend_name, "upper")
-    HAND_PROMPTS = get_prompts_for_backend(backend_name, "hands")
 
     logger.debug("[STEP] detecting shoes ...")
-    detect_and_store("shoes", FOOTWEAR_PROMPTS)
+    detect_and_store("shoes", get_prompts_for_backend(backend_name, "shoes"))
 
     logger.debug("[STEP] detecting lower ...")
-    detect_and_store("lower_raw", LOWER_PROMPTS)
+    detect_and_store("lower_raw", get_prompts_for_backend(backend_name, "lower"))
     lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
     masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
 
     logger.debug("[STEP] detecting head (for removal) ...")
-    detect_and_store("head", HEADWEAR_PROMPTS)
+    detect_and_store("head", get_prompts_for_backend(backend_name, "head"))
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
     if np.any(head_mask):
         kernel = np.ones((15, 15), np.uint8)
@@ -455,7 +449,7 @@ def process_image_ultralytics(
     masks["head"] = head_mask
 
     logger.debug("[STEP] detecting upper ...")
-    detect_and_store("upper_raw", UPPER_PROMPTS)
+    detect_and_store("upper_raw", get_prompts_for_backend(backend_name, "upper"))
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     upper_mask = (
         upper_mask
@@ -468,7 +462,7 @@ def process_image_ultralytics(
     masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
     logger.debug("[STEP] detecting hands (remove from upper)...")
-    detect_and_store("hands", HAND_PROMPTS)
+    detect_and_store("hands", get_prompts_for_backend(backend_name, "hands"))
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
     if np.any(hand_mask):
