@@ -29,11 +29,6 @@ from .segmentation import (
     BODY_PARTS_PROMPTS_ULTRA,
 )
 
-def get_prompts_for_backend(backend_name: str, part_name: str) -> List[str]:
-    if backend_name == "mlx":
-        return BODY_PARTS_PROMPTS_MIX.get(part_name, [])
-    else:
-        return BODY_PARTS_PROMPTS_ULTRA.get(part_name, [])
 
 def get_device() -> torch.device:
     """
@@ -352,97 +347,6 @@ def remove_background(
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def process_image_ultralytics(
-    image_path: str,
-    processor: AutoProcessor,
-    dino_model: AutoModelForZeroShotObjectDetection,
-    sam3_model: SAM3Base,
-    device: torch.device,
-    box_threshold: float,
-    text_threshold: float,
-) -> Dict[str, str]:
-    image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
-    if image_bgr is None:
-        print(f"[WARN] cannot read image: {image_path}")
-        return
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    image_pil = Image.fromarray(image_rgb)
-    h, w = image_rgb.shape[:2]
-
-    masks: Dict[str, np.ndarray] = {}
-
-    def detect_and_store(key: str, prompts: List[str]):
-        dino_res = run_grounding_dino(
-            image_pil=image_pil,
-            prompts=prompts,
-            processor=processor,
-            dino_model=dino_model,
-            device=device,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-        )
-        boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-        masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
-
-    backend_name = sam3_model.backend_name
-
-    logger.debug("[STEP] detecting shoes ...")
-    detect_and_store("shoes", get_prompts_for_backend(backend_name, "shoes"))
-
-    logger.debug("[STEP] detecting lower ...")
-    detect_and_store("lower_raw", get_prompts_for_backend(backend_name, "lower"))
-    lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
-    lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
-    masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
-
-    logger.debug("[STEP] detecting head (for removal) ...")
-    detect_and_store("head", get_prompts_for_backend(backend_name, "head"))
-    head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
-    if np.any(head_mask):
-        kernel = np.ones((15, 15), np.uint8)
-        head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
-    masks["head"] = head_mask
-
-    logger.debug("[STEP] detecting upper ...")
-    detect_and_store("upper_raw", get_prompts_for_backend(backend_name, "upper"))
-    upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
-    upper_mask = (
-        upper_mask
-        & (~masks.get("lower", np.zeros_like(upper_mask)))
-        & (~masks.get("shoes", np.zeros_like(upper_mask)))
-        & (~masks.get("head", np.zeros_like(upper_mask)))
-    )
-    upper_mask = clean_mask(upper_mask, min_area_ratio=0.001)
-    masks["upper"] = upper_mask
-    masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
-
-    logger.debug("[STEP] detecting hands (remove from upper)...")
-    detect_and_store("hands", get_prompts_for_backend(backend_name, "hands"))
-    hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
-    hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
-    if np.any(hand_mask):
-        kernel = np.ones((5, 5), np.uint8)
-        hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
-    masks["hands"] = hand_mask
-
-    masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
-    masks["upper"] = clean_mask(masks["upper"], min_area_ratio=0.001)
-    results: Dict[str, str] = {}
-    outputs = [
-        ("upper", "upper"),
-        ("lower", "lower"),
-        ("shoes", "shoes"),
-        ("head", "head"),
-        ("hands", "hands"),
-    ]
-    for key, name in outputs:
-        mask_part = masks.get(key, np.zeros((h, w), dtype=bool))
-        out_img = white_bg(image_bgr, mask_part)
-        results[name] = encode_image(out_img, ext=".jpg")
-    return results
-
-
-
 def process_image(
     image_path: str,
     processor: AutoProcessor,
@@ -461,33 +365,21 @@ def process_image(
     image_pil = Image.fromarray(image_rgb)
     h, w = image_rgb.shape[:2]
 
-    if sam3_model.backend_name == "mlx":
-        logger.info("[PERF] MLX backend: using segment_parts (no DINO)")
-        segment_start = time.time()
-        results = segment_parts(
-            image_pil=image_pil,
-            sam3_model=sam3_model,
-            processor=None,
-            dino_model=None,
-            device=None,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-        )
-        segment_time = time.time() - segment_start
-        logger.info(f"[PERF] MLX segment_parts: {segment_time:.2f}s")
-        return results
-
-    # Ultralytics 后端使用 process_image_ultralytics
-    logger.info("[PERF] Ultralytics backend: using process_image_ultralytics")
-    return process_image_ultralytics(
-        image_path=image_path,
+    # 统一使用 segment_parts，它会根据后端类型自动选择实现
+    logger.info(f"[PERF] {sam3_model.backend_name.upper()} backend: using segment_parts")
+    segment_start = time.time()
+    results = segment_parts(
+        image_pil=image_pil,
+        sam3_model=sam3_model,
         processor=processor,
         dino_model=dino_model,
-        sam3_model=sam3_model,
         device=device,
         box_threshold=box_threshold,
         text_threshold=text_threshold,
     )
+    segment_time = time.time() - segment_start
+    logger.info(f"[PERF] segment_parts: {segment_time:.2f}s")
+    return results
 
 
 def run_batch(
