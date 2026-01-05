@@ -385,7 +385,7 @@ def get_prompts_for_backend(backend_name: str, part_name: str) -> List[str]:
         return BODY_PARTS_PROMPTS_ULTRA.get(part_name, [])
 
 
-def segment_parts_ultra(
+def segment_parts_ultralytics(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
     processor: AutoProcessor,
@@ -496,7 +496,7 @@ def segment_parts(
             text_threshold=text_threshold,
         )
     else:
-        return segment_parts_ultra(
+        return segment_parts_ultralytics(
             image_pil=image_pil,
             sam3_model=sam3_model,
             processor=processor,
