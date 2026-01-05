@@ -190,6 +190,102 @@ def clean_mask(mask: np.ndarray, min_area_ratio: float = 0.001) -> np.ndarray:
     cleaned = keep[labels]
     return cleaned.astype(bool)
 
+def mask_from_boxes(
+    image_pil: Image.Image,
+    boxes: np.ndarray,
+    sam3_model: SAM3Base,
+    min_area_ratio: float = 0.001,
+    save_debug: bool = False,
+    debug_prefix: str = "",
+    debug_dir: str = "",
+) -> np.ndarray:
+    """
+    从边界框列表生成 mask（优化版：支持批量处理）
+    
+    Args:
+        image_pil: PIL Image
+        boxes: numpy array of shape (N, 4) with [x1, y1, x2, y2]
+        sam3_model: SAM3Base 实例
+        min_area_ratio: 最小区域比例，用于过滤小组件
+        save_debug: 是否保存调试图片
+        debug_prefix: 调试文件前缀
+        debug_dir: 调试文件目录
+    
+    Returns:
+        Binary mask as numpy array
+    """
+    import os
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    if boxes.size == 0:
+        h, w = image_pil.size[1], image_pil.size[0]
+        return np.zeros((h, w), dtype=bool)
+
+    h, w = image_pil.size[1], image_pil.size[0]
+    
+    # 尝试批量处理以提高性能
+    if hasattr(sam3_model, 'generate_mask_from_bboxes') and len(boxes) > 1:
+        try:
+            mask_total = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
+            if mask_total is not None and mask_total.ndim == 2 and mask_total.shape == (h, w):
+                kernel = np.ones((3, 3), np.uint8)
+                mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
+                mask_total = clean_mask(mask_total, min_area_ratio=min_area_ratio)
+                return mask_total
+        except Exception as e:
+            logger.warning(f"[SAM3] Batch processing failed: {e}, falling back to loop")
+    
+    # 回退到循环处理
+    mask_total = None
+    individual_masks = []
+    for i, box in enumerate(boxes):
+        x1, y1, x2, y2 = box
+        bbox = np.array([[x1, y1, x2, y2]])
+        
+        mask = sam3_model.generate_mask_from_bbox(image_pil, bbox)
+        
+        if mask is None:
+            continue
+        
+        if mask.ndim != 2:
+            continue
+        
+        if mask.shape != (h, w):
+            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+        
+        if np.sum(mask) == 0:
+            continue
+
+        if save_debug and debug_prefix and debug_dir:
+            mask_vis = (mask.astype(np.uint8)) * 255
+            debug_path = os.path.join(debug_dir, f"{debug_prefix}_box_{i}_mask.png")
+            os.makedirs(debug_dir, exist_ok=True)
+            cv2.imwrite(debug_path, mask_vis)
+            logger.info(f"Saved individual mask: {debug_path}")
+
+        individual_masks.append(mask)
+        if mask_total is None:
+            mask_total = mask.copy()
+        else:
+            mask_total |= mask
+
+    if mask_total is None:
+        return np.zeros((h, w), dtype=bool)
+
+    if save_debug and debug_prefix and debug_dir:
+        mask_vis = (mask_total.astype(np.uint8)) * 255
+        debug_path = os.path.join(debug_dir, f"{debug_prefix}_merged_mask.png")
+        os.makedirs(debug_dir, exist_ok=True)
+        cv2.imwrite(debug_path, mask_vis)
+        logger.info(f"Saved merged mask: {debug_path}")
+
+    kernel = np.ones((3, 3), np.uint8)
+    mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
+    mask_total = clean_mask(mask_total, min_area_ratio=min_area_ratio)
+    return mask_total
+
+
 def dino_detect(
     image_pil: Image.Image,
     prompts: List[str],
@@ -396,7 +492,7 @@ def segment_parts_ultralytics(
 ) -> Dict[str, str]:
     """Ultralytics 后端的分割函数"""
     # 延迟导入避免循环导入
-    from .pipeline import run_grounding_dino, mask_from_boxes
+    from .pipeline import run_grounding_dino
     
     image_rgb = np.array(image_pil)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
