@@ -1,10 +1,10 @@
 """
-常量定义
-包含提示词、阈值等配置
+Constants definition
+Contains prompts, thresholds and other configurations
 """
 from typing import Dict, List
 
-# 身体部位提示词 - MLX 后端（精简版）
+# Body parts prompts - MLX backend (simplified version)
 BODY_PARTS_PROMPTS_MIX = {
     "upper": [
         "upper body clothing",
@@ -42,7 +42,7 @@ BODY_PARTS_PROMPTS_MIX = {
     ],
 }
 
-# 身体部位提示词 - Ultralytics 后端（完整版，保留作为备选）
+# Body parts prompts - Ultralytics backend (full version, kept as alternative)
 BODY_PARTS_PROMPTS_ULTRA = {
     **BODY_PARTS_PROMPTS_MIX,
     "head": [
@@ -70,15 +70,15 @@ BODY_PARTS_PROMPTS_ULTRA = {
     ],
 }
 
-# 默认阈值配置
+# Default threshold configuration
 DEFAULT_BOX_THRESHOLD = 0.3
 DEFAULT_TEXT_THRESHOLD = 0.25
 
-# Mask 处理配置
+# Mask processing configuration
 DEFAULT_MIN_AREA_RATIO = 0.001
 HANDS_MIN_AREA_RATIO = 0.0005
 
-# 形态学操作配置
+# Morphological operation configuration
 HEAD_DILATE_KERNEL_SIZE = 15
 HANDS_DILATE_KERNEL_SIZE = 5
 MASK_CLOSE_KERNEL_SIZE = 3
