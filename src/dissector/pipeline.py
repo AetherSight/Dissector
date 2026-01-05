@@ -185,8 +185,19 @@ def mask_from_boxes(
 
     h, w = image_pil.size[1], image_pil.size[0]
     
-    # 禁用批量处理，强制使用循环处理，确保与原本行为一致
-    # 批量处理可能导致多个 boxes 的 mask 错误合并
+    # 尝试批量处理以提高性能
+    if hasattr(sam3_model, 'generate_mask_from_bboxes') and len(boxes) > 1:
+        try:
+            mask_total = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
+            if mask_total is not None and mask_total.ndim == 2 and mask_total.shape == (h, w):
+                kernel = np.ones((3, 3), np.uint8)
+                mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
+                mask_total = clean_mask(mask_total, min_area_ratio=min_area_ratio)
+                return mask_total
+        except Exception as e:
+            logger.warning(f"[SAM3] Batch processing failed: {e}, falling back to loop")
+    
+    # 回退到循环处理
     mask_total = None
     individual_masks = []
     for i, box in enumerate(boxes):
