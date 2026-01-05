@@ -72,11 +72,17 @@ async def shutdown_event():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    # For MLX backend, only sam3_model is needed (processor and dino_model are None)
+    if sam3_model and sam3_model.backend_name == "mlx":
+        models_loaded = sam3_model is not None
+    else:
+        models_loaded = all([processor, dino_model, sam3_model])
+    
     return {
         "status": "healthy",
         "device": str(device) if device else "unknown",
         "sam3_backend": sam3_model.backend_name if sam3_model else "unknown",
-        "models_loaded": all([processor, dino_model, sam3_model])
+        "models_loaded": models_loaded
     }
 
 
@@ -91,7 +97,10 @@ async def segment_image(
     
     Returns base64-encoded images for: upper, lower, shoes, head, hands
     """
-    if not all([processor, dino_model, sam3_model]):
+    # For MLX backend, only sam3_model is needed
+    if not sam3_model:
+        raise HTTPException(status_code=503, detail="Models not loaded")
+    if sam3_model.backend_name != "mlx" and not all([processor, dino_model]):
         raise HTTPException(status_code=503, detail="Models not loaded")
     
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -146,7 +155,10 @@ async def remove_background_endpoint(
     
     Returns base64-encoded PNG image with transparent background.
     """
-    if not all([processor, dino_model, sam3_model]):
+    # For MLX backend, only sam3_model is needed
+    if not sam3_model:
+        raise HTTPException(status_code=503, detail="Models not loaded")
+    if sam3_model.backend_name != "mlx" and not all([processor, dino_model]):
         raise HTTPException(status_code=503, detail="Models not loaded")
     
     if not file.content_type or not file.content_type.startswith("image/"):
