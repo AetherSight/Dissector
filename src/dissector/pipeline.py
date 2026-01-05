@@ -441,23 +441,24 @@ def process_image(
             text_threshold=text_threshold,
         )
         boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-        masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
+        mask = mask_from_boxes(image_pil, boxes, sam3_model)
+        masks[key] = mask.copy()  # 确保使用副本，避免引用问题
 
     # Ultralytics 后端：按照原本的顺序处理
     # 注意：MLX 后端已在上面通过 segment_parts 处理并返回
-    logger.debug("[STEP] detecting shoes ...")
+    logger.info("[STEP] detecting shoes ...")
     backend_name = sam3_model.backend_name
     FOOTWEAR_PROMPTS = get_prompts_for_backend(backend_name, "shoes")
     detect_and_store("shoes", FOOTWEAR_PROMPTS)
 
-    logger.debug("[STEP] detecting lower ...")
+    logger.info("[STEP] detecting lower ...")
     LOWER_PROMPTS = get_prompts_for_backend(backend_name, "lower")
     detect_and_store("lower_raw", LOWER_PROMPTS)
     lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
     masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
 
-    logger.debug("[STEP] detecting head (for removal) ...")
+    logger.info("[STEP] detecting head (for removal) ...")
     HEADWEAR_PROMPTS = get_prompts_for_backend(backend_name, "head")
     detect_and_store("head", HEADWEAR_PROMPTS)
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
@@ -466,7 +467,7 @@ def process_image(
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["head"] = head_mask
 
-    logger.debug("[STEP] detecting upper ...")
+    logger.info("[STEP] detecting upper ...")
     UPPER_PROMPTS = get_prompts_for_backend(backend_name, "upper")
     detect_and_store("upper_raw", UPPER_PROMPTS)
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
@@ -480,7 +481,7 @@ def process_image(
     masks["upper"] = upper_mask
     masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
-    logger.debug("[STEP] detecting hands (remove from upper)...")
+    logger.info("[STEP] detecting hands (remove from upper)...")
     HAND_PROMPTS = get_prompts_for_backend(backend_name, "hands")
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
@@ -488,7 +489,7 @@ def process_image(
     if np.any(hand_mask):
         kernel = np.ones((5, 5), np.uint8)
         hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
-    masks["hands"] = hand_mask
+    masks["hands"] = hand_mask.copy()  # 确保使用副本，避免引用问题
 
     masks["upper"] = masks.get("upper", np.zeros_like(hand_mask)) & (~hand_mask)
     masks["upper"] = clean_mask(masks["upper"], min_area_ratio=0.001)
@@ -502,7 +503,7 @@ def process_image(
     ]
     step_start = time.time()
     for key, name in outputs:
-        mask_part = masks.get(key, np.zeros((h, w), dtype=bool))
+        mask_part = masks.get(key, np.zeros((h, w), dtype=bool)).copy()  # 确保使用副本
         out_img = white_bg(image_bgr, mask_part)
         results[name] = encode_image(out_img, ext=".jpg")
     encode_time = time.time() - step_start
