@@ -25,7 +25,7 @@ from PIL import Image
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 from .backend import SAM3Factory, SAM3Base
-from .body_parts_segmentation import segment_body_parts_with_sam3, BODY_PARTS_PROMPTS
+from .segmentation import segment_body_parts_with_sam3, BODY_PARTS_PROMPTS
 
 
 def get_device() -> torch.device:
@@ -43,7 +43,7 @@ def get_device() -> torch.device:
     else:
         return torch.device("cpu")
 
-# 从 body_parts_segmentation 导入统一的提示词源
+# 从 segmentation 导入统一的提示词源
 HEADWEAR_PROMPTS = BODY_PARTS_PROMPTS["head"]
 UPPER_PROMPTS = BODY_PARTS_PROMPTS["upper"]
 LOWER_PROMPTS = BODY_PARTS_PROMPTS["lower"]
