@@ -130,46 +130,79 @@ def remove_background(
         "human",
     ]
     
-    dino_res = run_grounding_dino(
-        image_pil=image_pil,
-        prompts=person_prompts,
-        processor=processor,
-        dino_model=dino_model,
-        device=device,
-        box_threshold=0.25,
-        text_threshold=0.2,
-    )
-    boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-    
-    if boxes.size == 0:
-        person_mask = np.ones((h, w), dtype=bool)
-    else:
-        mask_total = None
-        
-        for box in boxes:
-            x1, y1, x2, y2 = box
-            bbox = np.array([[x1, y1, x2, y2]])
-            
-            mask = sam3_model.generate_mask_from_bbox(image_pil, bbox)
-            
-            if mask is None:
+    # Check if using MLX backend (no Grounding DINO)
+    if sam3_model.backend_name == "mlx" or processor is None or dino_model is None:
+        # Use SAM3 text prompt for MLX backend
+        logger.info("Using SAM3 text prompt for background removal (MLX backend)")
+        person_mask_total = None
+        for prompt in person_prompts:
+            try:
+                prompt_mask = sam3_model.generate_mask_from_text_prompt(
+                    image_pil=image_pil,
+                    text_prompt=prompt,
+                )
+                if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
+                    if prompt_mask.shape != (h, w):
+                        mask_uint8 = (prompt_mask.astype(np.uint8) * 255) if prompt_mask.dtype == bool else prompt_mask.astype(np.uint8)
+                        prompt_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                    else:
+                        if prompt_mask.dtype != bool:
+                            prompt_mask = prompt_mask.astype(bool)
+                    
+                    if person_mask_total is None:
+                        person_mask_total = prompt_mask.copy()
+                    else:
+                        person_mask_total |= prompt_mask
+            except Exception as e:
+                logger.warning(f"Failed to generate mask for prompt '{prompt}': {e}")
                 continue
-            
-            if mask.ndim != 2:
-                continue
-            
-            if mask.shape != (h, w):
-                mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-            
-            if mask_total is None:
-                mask_total = mask.copy()
-            else:
-                mask_total |= mask
         
-        if mask_total is None or np.sum(mask_total) == 0:
+        if person_mask_total is None or np.sum(person_mask_total) == 0:
             person_mask = np.ones((h, w), dtype=bool)
         else:
-            person_mask = mask_total
+            person_mask = person_mask_total
+    else:
+        # Use Grounding DINO for ultralytics backend
+        dino_res = run_grounding_dino(
+            image_pil=image_pil,
+            prompts=person_prompts,
+            processor=processor,
+            dino_model=dino_model,
+            device=device,
+            box_threshold=0.25,
+            text_threshold=0.2,
+        )
+        boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
+        
+        if boxes.size == 0:
+            person_mask = np.ones((h, w), dtype=bool)
+        else:
+            mask_total = None
+            
+            for box in boxes:
+                x1, y1, x2, y2 = box
+                bbox = np.array([[x1, y1, x2, y2]])
+                
+                mask = sam3_model.generate_mask_from_bbox(image_pil, bbox)
+                
+                if mask is None:
+                    continue
+                
+                if mask.ndim != 2:
+                    continue
+                
+                if mask.shape != (h, w):
+                    mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                
+                if mask_total is None:
+                    mask_total = mask.copy()
+                else:
+                    mask_total |= mask
+            
+            if mask_total is None or np.sum(mask_total) == 0:
+                person_mask = np.ones((h, w), dtype=bool)
+            else:
+                person_mask = mask_total
     
     image_rgba = image_rgb.copy()
     alpha_channel = (person_mask.astype(np.uint8) * 255)

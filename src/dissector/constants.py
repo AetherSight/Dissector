@@ -17,11 +17,13 @@ BODY_PARTS_PROMPTS_MIX = {
     "lower_negation_for_upper": [
         "leg",
         "pants",
+        "socks",
     ],
     "lower": [
         "leg",
         "pants",
         "skirt",
+        "socks",
     ],
     "shoes": [
         "footwear",

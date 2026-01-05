@@ -34,6 +34,8 @@ from dissector.pipeline import (
     remove_background,
 )
 from dissector.backend import SAM3Factory
+from dissector.segmentation import debug_get_mask
+from dissector.constants import BODY_PARTS_PROMPTS_MIX
 
 
 def main():
@@ -43,6 +45,10 @@ def main():
     parser.add_argument('--text-threshold', type=float, default=0.25, help='Text threshold for Grounding DINO')
     parser.add_argument('--output-dir', type=str, default='./output', help='Output directory')
     parser.add_argument('--remove-bg', action='store_true', help='Also test background removal')
+    parser.add_argument('--debug-part', type=str, nargs='+', 
+                        choices=list(BODY_PARTS_PROMPTS_MIX.keys()),
+                        help='Debug mode: generate mask images for all prompts of specified part(s). Can specify multiple parts: --debug-part upper lower head')
+    parser.add_argument('--debug-dir', type=str, default='./tmp', help='Debug output directory (used with --debug-part)')
     
     args = parser.parse_args()
     
@@ -70,6 +76,37 @@ def main():
     except Exception as e:
         logger.error(f"Failed to load models: {e}", exc_info=True)
         sys.exit(1)
+    
+    # Debug mode: generate mask images for prompts
+    if args.debug_part:
+        logger.info(f"Debug mode: generating masks for part(s): {', '.join(args.debug_part)}")
+        try:
+            # Load image
+            image_pil = Image.open(args.image_path)
+            if image_pil.mode != "RGB":
+                image_pil = image_pil.convert("RGB")
+            
+            # Create debug directory
+            debug_dir = Path(args.debug_dir)
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Debug output directory: {debug_dir}")
+            
+            # Call debug function for each part
+            for part_name in args.debug_part:
+                logger.info(f"Processing part: {part_name}")
+                debug_get_mask(
+                    part_name=part_name,
+                    image_pil=image_pil,
+                    sam3_model=sam3_model,
+                    debug_dir=str(debug_dir),
+                )
+            
+            logger.info(f"Debug masks saved to: {debug_dir}")
+            return
+        
+        except Exception as e:
+            logger.error(f"Error in debug mode: {e}", exc_info=True)
+            sys.exit(1)
     
     # Process image segmentation
     logger.info(f"Processing image: {args.image_path}")

@@ -6,7 +6,7 @@
 import numpy as np
 import cv2
 from PIL import Image
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 import base64
 import logging
 import os
@@ -191,11 +191,9 @@ def segment_parts_mlx(
     other_parts = ["lower", "shoes", "head", "hands"]
     
     for part_name, prompts in prompts_dict.items():
-        if part_name == "lower_negation_for_upper":
-            continue
         try:
             mask_total = None
-            for prompt in prompts:
+            for prompt_idx, prompt in enumerate(prompts):
                 try:
                     prompt_mask = sam3_model.generate_mask_from_text_prompt(
                         image_pil=image_pil,
@@ -244,7 +242,9 @@ def segment_parts_mlx(
                 continue
         
         if lower_negation_mask_total is None or lower_negation_mask_total.size == 0:
-            lower_negation_mask = masks_dict.get("lower", np.zeros((h, w), dtype=bool)).copy()
+            # No lower parts detected (e.g., legs/pants are covered), use empty mask
+            logger.info("lower_negation_for_upper prompts returned no mask (legs/pants may be covered), using empty mask")
+            lower_negation_mask = np.zeros((h, w), dtype=bool)
         else:
             lower_negation_mask = lower_negation_mask_total
             if lower_negation_mask.shape != (h, w):
@@ -253,7 +253,9 @@ def segment_parts_mlx(
         
         masks_dict["lower_negation_for_upper"] = lower_negation_mask
     else:
-        masks_dict["lower_negation_for_upper"] = masks_dict.get("lower", np.zeros((h, w), dtype=bool))
+        # lower_negation_for_upper not in prompts, use empty mask
+        logger.info("lower_negation_for_upper not in prompts, using empty mask")
+        masks_dict["lower_negation_for_upper"] = np.zeros((h, w), dtype=bool)
     
     person_prompts = ["person", "full body", "outfit", "garment"]
     person_mask_total = None
@@ -284,22 +286,33 @@ def segment_parts_mlx(
     
     upper_detected = masks_dict.get("upper", np.zeros((h, w), dtype=bool))
     lower_negation_mask = masks_dict.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
+    lower_mask_for_upper = masks_dict.get("lower", np.zeros((h, w), dtype=bool))
     
-    upper_detected_cleaned = upper_detected.copy()
-    upper_detected_cleaned = upper_detected_cleaned & (~lower_negation_mask)
+    # upper: 正常流程得到的 upper，不和 lower_negation_for_upper 取反（使用原始检测结果）
+    upper_original = upper_detected.copy()
+    if upper_original.shape != (h, w):
+        mask_uint8 = (upper_original.astype(np.uint8) * 255) if upper_original.dtype == bool else upper_original.astype(np.uint8)
+        upper_original = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+    upper_original = clean_mask(upper_original, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks_dict["upper"] = upper_original
+    
+    # upper_1: 和 lower_negation_for_upper 取反
+    upper_1 = upper_detected.copy()
+    upper_1 = upper_1 & (~lower_negation_mask)
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks_dict:
-            upper_detected_cleaned = upper_detected_cleaned & (~masks_dict[part_name])
+            upper_1 = upper_1 & (~masks_dict[part_name])
+    upper_1 = clean_mask(upper_1, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks_dict["upper_1"] = upper_1
     
-    upper_from_subtraction = person_mask.copy()
-    upper_from_subtraction = upper_from_subtraction & (~lower_negation_mask)
+    # upper_2: 和 lower 取反
+    upper_2 = upper_detected.copy()
+    upper_2 = upper_2 & (~lower_mask_for_upper)
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks_dict:
-            upper_from_subtraction = upper_from_subtraction & (~masks_dict[part_name])
-    
-    upper_mask = upper_detected_cleaned | upper_from_subtraction
-    upper_mask = clean_mask(upper_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
-    masks_dict["upper"] = upper_mask
+            upper_2 = upper_2 & (~masks_dict[part_name])
+    upper_2 = clean_mask(upper_2, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks_dict["upper_2"] = upper_2
     
     if "lower" in masks_dict:
         lower_mask = masks_dict["lower"].copy()
@@ -315,7 +328,149 @@ def segment_parts_mlx(
         cropped_img = white_bg(image_bgr, mask)
         results[part_name] = encode_image(cropped_img, ext=".jpg")
     
+    # 添加 upper 的变体到结果中
+    # upper: 已经在上面处理了（正常流程，不取反）
+    # upper_1: 和 lower_negation_for_upper 取反
+    # upper_2: 和 lower 取反
+    for variant_name in ["upper_1", "upper_2"]:
+        if variant_name in masks_dict:
+            mask = masks_dict[variant_name]
+            cropped_img = white_bg(image_bgr, mask)
+            results[variant_name] = encode_image(cropped_img, ext=".jpg")
+    
     return results
+
+def debug_get_mask(
+    part_name: str,
+    image_pil: Image.Image,
+    sam3_model: SAM3Base,
+    debug_dir: str = "./tmp",
+) -> None:
+    """
+    调试函数：为指定部位生成所有提示词的 mask 并保存文件
+    
+    Args:
+        part_name: 部位名称，如 "upper", "lower", "shoes", "head", "hands", "lower_negation_for_upper"
+        image_pil: PIL Image 对象
+        sam3_model: SAM3Base 实例
+        debug_dir: 调试文件保存目录，默认为 "./tmp"
+    """
+    # 获取该部位的提示词
+    prompts_dict = BODY_PARTS_PROMPTS_MIX
+    if part_name not in prompts_dict:
+        logger.warning(f"Part '{part_name}' not found in prompts dict")
+        return
+    
+    prompts = prompts_dict[part_name]
+    h, w = image_pil.size[1], image_pil.size[0]
+    
+    # 确保目录存在
+    os.makedirs(debug_dir, exist_ok=True)
+    
+    logger.info(f"Debug: generating masks for part '{part_name}' with {len(prompts)} prompts")
+    
+    mask_total = None
+    valid_prompts_count = 0
+    
+    for prompt_idx, prompt in enumerate(prompts):
+        try:
+            logger.debug(f"Processing prompt {prompt_idx+1}/{len(prompts)}: '{prompt}'")
+            prompt_mask = sam3_model.generate_mask_from_text_prompt(
+                image_pil=image_pil,
+                text_prompt=prompt,
+            )
+            
+            if prompt_mask is None:
+                logger.warning(f"Prompt '{prompt}' returned None mask")
+                continue
+            
+            if prompt_mask.size == 0:
+                logger.warning(f"Prompt '{prompt}' returned empty mask")
+                continue
+            
+            mask_pixels = np.sum(prompt_mask)
+            if mask_pixels == 0:
+                logger.warning(f"Prompt '{prompt}' generated mask with 0 pixels")
+                continue
+            
+            # 处理 mask 尺寸
+            if prompt_mask.shape != (h, w):
+                mask_uint8 = (prompt_mask.astype(np.uint8) * 255) if prompt_mask.dtype == bool else prompt_mask.astype(np.uint8)
+                mask_vis = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST)
+                prompt_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+            else:
+                mask_vis = (prompt_mask.astype(np.uint8)) * 255
+                if prompt_mask.dtype != bool:
+                    prompt_mask = prompt_mask.astype(bool)
+            
+            # 生成文件名
+            prompt_safe = prompt.replace(" ", "_").replace("/", "_")
+            debug_path = os.path.join(debug_dir, f"{part_name}_prompt_{prompt_idx+1:02d}_{prompt_safe}.png")
+            
+            # 保存文件
+            success = cv2.imwrite(debug_path, mask_vis)
+            if success:
+                logger.info(f"Saved debug mask: {debug_path} (pixels: {mask_pixels})")
+                valid_prompts_count += 1
+            else:
+                logger.error(f"Failed to save debug mask: {debug_path}")
+                continue
+            
+            # 合并到总 mask
+            if mask_total is None:
+                mask_total = prompt_mask.copy()
+            else:
+                mask_total |= prompt_mask
+                
+        except Exception as e:
+            logger.warning(f"Failed to generate mask for prompt '{prompt}': {e}", exc_info=True)
+            continue
+    
+    # 保存合成的最终 mask
+    if mask_total is not None and np.sum(mask_total) > 0:
+        mask_total_vis = (mask_total.astype(np.uint8)) * 255
+        merged_path = os.path.join(debug_dir, f"{part_name}_merged_mask.png")
+        success = cv2.imwrite(merged_path, mask_total_vis)
+        if success:
+            total_pixels = np.sum(mask_total)
+            logger.info(f"Saved merged mask: {merged_path} (total pixels: {total_pixels}, from {valid_prompts_count} prompts)")
+        else:
+            logger.error(f"Failed to save merged mask: {merged_path}")
+        
+        # 保存叠加在原图上的可视化
+        try:
+            image_rgb = np.array(image_pil)
+            overlay = image_rgb.copy()
+            # 使用不同颜色区分不同部位
+            color_map = {
+                "upper": [0, 255, 0],  # 绿色
+                "lower": [255, 0, 0],  # 蓝色
+                "shoes": [0, 0, 255],  # 红色
+                "head": [255, 255, 0],  # 青色
+                "hands": [255, 0, 255],  # 洋红色
+                "lower_negation_for_upper": [255, 165, 0],  # 橙色
+            }
+            color = color_map.get(part_name, [0, 255, 0])
+            overlay[mask_total] = overlay[mask_total] * 0.7 + np.array(color) * 0.3
+            overlay_bgr = cv2.cvtColor(overlay.astype(np.uint8), cv2.COLOR_RGB2BGR)
+            overlay_path = os.path.join(debug_dir, f"{part_name}_merged_overlay.jpg")
+            success = cv2.imwrite(overlay_path, overlay_bgr)
+            if success:
+                logger.info(f"Saved merged overlay: {overlay_path}")
+            else:
+                logger.error(f"Failed to save merged overlay: {overlay_path}")
+        except Exception as e:
+            logger.warning(f"Failed to create overlay image: {e}")
+    else:
+        # 对于 lower_negation_for_upper，如果所有 prompts 都失败，检查是否会使用 fallback
+        if part_name == "lower_negation_for_upper":
+            logger.warning(f"No valid masks generated for part '{part_name}' from prompts")
+            logger.warning("Note: In actual segmentation, this will use empty mask (no fallback)")
+            if "lower" in BODY_PARTS_PROMPTS_MIX:
+                logger.info("You may want to debug 'lower' part to see what mask would be used as reference")
+        else:
+            logger.warning(f"No valid masks generated for part '{part_name}', skipping merged mask")
+
 
 def get_prompts_for_backend(backend_name: str, part_name: str):
     """
