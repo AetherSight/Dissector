@@ -118,7 +118,7 @@ def run_grounding_dino(
         results = processor.post_process_grounded_object_detection(
             outputs,
             input_ids=inputs["input_ids"],
-            threshold=box_threshold,
+            box_threshold=box_threshold,
             text_threshold=text_threshold,
             target_sizes=target_sizes,
         )[0]
