@@ -33,7 +33,7 @@ if _max_workers <= 0:
         _max_workers = 1
     else:
         cpu_count = multiprocessing.cpu_count()
-        if torch.cuda.is_available() or (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+        if torch.cuda.is_available():
             _max_workers = min(cpu_count, 8)
         else:
             _max_workers = min(cpu_count // 2, 4)

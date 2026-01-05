@@ -20,7 +20,7 @@ def main():
     else:
         if platform.system() == "Darwin":
             if workers > 1:
-                print(f"Warning: macOS detected. Forcing workers=1 (was {workers}) to avoid MLX/MPS concurrency issues.")
+                print(f"Warning: macOS detected. Forcing workers=1 (was {workers}) to avoid MLX concurrency issues.")
             workers = 1
         elif workers <= 0:
             cpu_count = multiprocessing.cpu_count()

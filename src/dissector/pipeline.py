@@ -28,17 +28,14 @@ from .segmentation import segment_parts
 def get_device() -> torch.device:
     """
     Get the best available device for PyTorch.
-    Priority: CUDA > MPS (Apple Silicon) > CPU
-    On macOS with MLX backend, use CPU to avoid MPS concurrency issues.
+    Priority: CUDA > CPU
+    On macOS with MLX backend, use CPU to avoid concurrency issues.
     """
     if torch.cuda.is_available():
         return torch.device("cuda")
-    elif platform.system() == "Darwin":
-        return torch.device("cpu")
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")
     else:
         return torch.device("cpu")
+
 
 def load_models(
     dino_model_name: str,
@@ -65,13 +62,7 @@ def load_models(
         local_files_only=True,
     ).to(device)
     
-    device_str = None
-    if device.type == "cuda":
-        device_str = "cuda"
-    elif device.type == "mps":
-        device_str = "mps"
-    else:
-        device_str = "cpu"
+    device_str = "cuda" if device.type == "cuda" else "cpu"
     
     sam3_model = SAM3Factory.create(backend=sam3_backend, device=device_str)
     logger.info(f"Loaded SAM3 model with backend: {sam3_model.backend_name}")

@@ -1,6 +1,6 @@
 """
 SAM3 多后端统一推理接口
-支持 Ultralytics (PyTorch/CUDA/MPS) 和 MLX (Apple Silicon) 后端
+支持 Ultralytics (PyTorch/CUDA/CPU) 和 MLX (Apple Silicon) 后端
 """
 import os
 import platform
@@ -79,7 +79,7 @@ class SAM3Base(ABC):
 
 
 class UltralyticsSAM3(SAM3Base):
-    """Ultralytics SAM3 实现，支持 CUDA/MPS/CPU"""
+    """Ultralytics SAM3 实现，支持 CUDA/CPU"""
     
     def __init__(self, model_path: Optional[str] = None, device: str = "cuda"):
         """
@@ -87,7 +87,7 @@ class UltralyticsSAM3(SAM3Base):
         
         Args:
             model_path: 模型路径，如果为 None 则自动查找
-            device: 设备类型，'cuda', 'mps', 或 'cpu'
+            device: 设备类型，'cuda' 或 'cpu'
         """
         from ultralytics import SAM
         
@@ -561,7 +561,7 @@ class SAM3Factory:
         Args:
             backend: 后端类型，"mlx" 或 "ultralytics"，如果为 None 则自动检测
             model_path: 模型路径（可选）
-            device: 设备类型，仅用于 Ultralytics（"cuda", "mps", "cpu"）
+            device: 设备类型，仅用于 Ultralytics（"cuda", "cpu"）
         
         Returns:
             SAM3Base 实例
@@ -578,8 +578,6 @@ class SAM3Factory:
             import torch
             if torch.cuda.is_available():
                 device = "cuda"
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                device = "mps"
             else:
                 device = "cpu"
         
