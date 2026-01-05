@@ -513,6 +513,9 @@ def process_image(
         "fingers",
         "bare hand",
         "bare fingers",
+        "gloves",
+        "ring",
+        "hand accessory",
     ]
     detect_and_store("hands", HAND_PROMPTS)
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
