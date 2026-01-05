@@ -25,15 +25,15 @@ from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 from .backend import SAM3Factory, SAM3Base
 from .segmentation import (
     segment_parts,
-    BODY_PARTS_PROMPTS_CORE,
-    BODY_PARTS_PROMPTS_FULL,
+    BODY_PARTS_PROMPTS_MIX,
+    BODY_PARTS_PROMPTS_ULTRA,
 )
 
 def get_prompts_for_backend(backend_name: str, part_name: str) -> List[str]:
     if backend_name == "mlx":
-        return BODY_PARTS_PROMPTS_CORE.get(part_name, [])
+        return BODY_PARTS_PROMPTS_MIX.get(part_name, [])
     else:
-        return BODY_PARTS_PROMPTS_FULL.get(part_name, [])
+        return BODY_PARTS_PROMPTS_ULTRA.get(part_name, [])
 
 def get_device() -> torch.device:
     """

@@ -19,7 +19,7 @@ def estimate_tokens(text: str) -> int:
     tokens_by_chars = int(char_count / 4) + 1
     return max(tokens_by_words, tokens_by_chars)
 
-BODY_PARTS_PROMPTS_CORE = {
+BODY_PARTS_PROMPTS_MIX = {
     "upper": [
         "upper body clothing",
         "waist belt",
@@ -56,7 +56,7 @@ BODY_PARTS_PROMPTS_CORE = {
     ],
 }
 
-BODY_PARTS_PROMPTS_FULL = {
+BODY_PARTS_PROMPTS_ULTRA = {
     "upper": [
         "upper body clothing",
         "upper garment",
@@ -141,7 +141,7 @@ BODY_PARTS_PROMPTS_FULL = {
     ],
 }
 
-BODY_PARTS_PROMPTS = BODY_PARTS_PROMPTS_CORE
+BODY_PARTS_PROMPTS = BODY_PARTS_PROMPTS_MIX
 
 def white_bg(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
     if np.sum(mask) == 0:
@@ -250,7 +250,7 @@ def segment_parts_mlx(
     h, w = image_rgb.shape[:2]
     
     results: Dict[str, str] = {}
-    prompts_dict = BODY_PARTS_PROMPTS_CORE
+    prompts_dict = BODY_PARTS_PROMPTS_MIX
     masks_dict: Dict[str, np.ndarray] = {}
     other_parts = ["lower", "shoes", "head", "hands"]
     
@@ -395,7 +395,7 @@ def segment_parts_ultralytics(
     h, w = image_rgb.shape[:2]
     
     results: Dict[str, str] = {}
-    prompts_dict = BODY_PARTS_PROMPTS_FULL
+    prompts_dict = BODY_PARTS_PROMPTS_ULTRA
     masks_dict: Dict[str, np.ndarray] = {}
     
     def detect_and_store(key: str, prompts: List[str]):
