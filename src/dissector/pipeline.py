@@ -429,101 +429,19 @@ def process_image_ultralytics(
         boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
         masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
 
-    # 使用原本的提示词定义
-    FOOTWEAR_PROMPTS: List[str] = [
-        "shoe",
-        "shoes",
-        "boot",
-        "boots",
-        "sandal",
-        "sneaker",
-        "high heel",
-        "flat shoe",
-    ]
-    
-    LOWER_PROMPTS: List[str] = [
-        "pants",
-        "trousers",
-        "jeans",
-        "slacks",
-        "shorts",
-        "leggings",
-        "tights",
-        "pant legs",
-        "trouser legs",
-        "pant waist",
-    ]
-    
-    HEADWEAR_PROMPTS: List[str] = [
-        "head",
-        "human head",
-        "face",
-        "facial area",
-        "hair",
-        "hairstyle",
-        "ponytail hair",
-        "cat ear",
-        "animal ear",
-        "headwear",
-        "hat",
-        "cap",
-        "helmet",
-        "crown",
-        "tiara",
-        "headband",
-        "hood",
-    ]
-    
-    UPPER_PROMPTS: List[str] = [
-        "upper body clothing",
-        "upper garment",
-        "top",
-        "shirt",
-        "blouse",
-        "jacket",
-        "coat",
-        "sweater",
-        "cardigan",
-        "hoodie",
-        "tunic",
-        "vest",
-        "armor chest",
-        "breastplate",
-        "dress bodice",
-        "dress top",
-        "upper part of dress",
-        "sleeve",
-        "long sleeve",
-        "short sleeve",
-        "arm guard",
-        "bracer",
-        "arm band",
-        "arm accessory",
-        "garment body",
-        "clothing fabric",
-        "inner lining",
-    ]
-    
-    HAND_PROMPTS: List[str] = [
-        "human hand",
-        "hands",
-        "palm",
-        "fingers",
-        "bare hand",
-        "bare fingers",
-    ]
+    backend_name = sam3_model.backend_name
 
     logger.debug("[STEP] detecting shoes ...")
-    detect_and_store("shoes", FOOTWEAR_PROMPTS)
+    detect_and_store("shoes", get_prompts_for_backend(backend_name, "shoes"))
 
     logger.debug("[STEP] detecting lower ...")
-    detect_and_store("lower_raw", LOWER_PROMPTS)
+    detect_and_store("lower_raw", get_prompts_for_backend(backend_name, "lower"))
     lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
     masks["lower"] = clean_mask(lower_mask, min_area_ratio=0.001)
 
     logger.debug("[STEP] detecting head (for removal) ...")
-    detect_and_store("head", HEADWEAR_PROMPTS)
+    detect_and_store("head", get_prompts_for_backend(backend_name, "head"))
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
     if np.any(head_mask):
         kernel = np.ones((15, 15), np.uint8)
@@ -531,7 +449,7 @@ def process_image_ultralytics(
     masks["head"] = head_mask
 
     logger.debug("[STEP] detecting upper ...")
-    detect_and_store("upper_raw", UPPER_PROMPTS)
+    detect_and_store("upper_raw", get_prompts_for_backend(backend_name, "upper"))
     upper_mask = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
     upper_mask = (
         upper_mask
@@ -544,7 +462,7 @@ def process_image_ultralytics(
     masks["shoes"] = clean_mask(masks.get("shoes", np.zeros_like(upper_mask)), min_area_ratio=0.001)
 
     logger.debug("[STEP] detecting hands (remove from upper)...")
-    detect_and_store("hands", HAND_PROMPTS)
+    detect_and_store("hands", get_prompts_for_backend(backend_name, "hands"))
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = clean_mask(hand_mask, min_area_ratio=0.0005)
     if np.any(hand_mask):
