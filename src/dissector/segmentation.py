@@ -320,15 +320,11 @@ def segment_parts(
     
     use_dino = sam3_model.backend_name == "ultralytics" and processor is not None and dino_model is not None
     
-    if sam3_model.backend_name == "mlx":
-        prompts_dict = BODY_PARTS_PROMPTS_CORE
-    else:
-        prompts_dict = BODY_PARTS_PROMPTS_FULL
+    prompts_dict = BODY_PARTS_PROMPTS_CORE
     
     masks_dict: Dict[str, np.ndarray] = {}
     
     other_parts = ["lower", "shoes", "head", "hands"]
-    other_parts_for_upper_negation = ["lower_negation_for_upper", "shoes", "head", "hands"]
     
     for part_name, prompts in prompts_dict.items():
         if part_name == "lower_negation_for_upper":
