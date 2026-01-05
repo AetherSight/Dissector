@@ -35,7 +35,7 @@ from dissector.pipeline import (
     save_with_white_bg,
     save_debug_overlay,
 )
-from dissector.sam3_backend import SAM3Factory
+from dissector.backend import SAM3Factory
 
 
 def main():

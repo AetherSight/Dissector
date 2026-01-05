@@ -90,7 +90,7 @@ No manual configuration required!
 If you need to manually specify the backend:
 
 ```python
-from dissector.sam3_backend import SAM3Factory
+from dissector.backend import SAM3Factory
 
 # Force Ultralytics backend
 sam3_model = SAM3Factory.create(backend="ultralytics", device="cuda")

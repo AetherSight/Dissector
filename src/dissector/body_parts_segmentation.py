@@ -13,7 +13,7 @@ import io
 import torch
 import os
 
-from .sam3_backend import SAM3Base
+from .backend import SAM3Base
 
 logger = logging.getLogger(__name__)
 

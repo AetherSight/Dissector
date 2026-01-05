@@ -24,7 +24,7 @@ import torch
 from PIL import Image
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
-from .sam3_backend import SAM3Factory, SAM3Base
+from .backend import SAM3Factory, SAM3Base
 from .body_parts_segmentation import segment_body_parts_with_sam3, BODY_PARTS_PROMPTS
 
 
