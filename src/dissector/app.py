@@ -115,10 +115,10 @@ async def segment_image(
         if image_pil.mode != "RGB":
             image_pil = image_pil.convert("RGB")
         
-        # Save to temporary file for processing
+        # Save to temporary file for processing (use PNG for lossless quality)
         import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
-            image_pil.save(tmp_file.name, "JPEG")
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
+            image_pil.save(tmp_file.name, "PNG")
             tmp_path = tmp_file.name
         
         try:
@@ -172,8 +172,8 @@ async def remove_background_endpoint(
             image_pil = image_pil.convert("RGB")
         
         import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
-            image_pil.save(tmp_file.name, "JPEG")
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
+            image_pil.save(tmp_file.name, "PNG")
             tmp_path = tmp_file.name
         
         try:

@@ -129,7 +129,7 @@ def main():
         logger.info("Saving segmented parts...")
         import base64
         
-        parts = ['upper', 'lower', 'shoes', 'head', 'hands']
+        parts = ['upper', 'lower', 'shoes', 'head', 'hands', 'upper_1', 'upper_2']
         for part in parts:
             if part in results:
                 try:

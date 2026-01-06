@@ -557,7 +557,6 @@ def segment_parts_ultralytics(
                     mask_total = round_mask.copy()
                 else:
                     mask_total |= round_mask
-            
             masks[key] = mask_total if mask_total is not None else np.zeros((h, w), dtype=bool)
         else:
             # 单轮检测：直接使用所有提示词
@@ -635,7 +634,9 @@ def segment_parts_ultralytics(
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks:
             upper_original = upper_original & (~masks[part_name])
+    
     upper_original = clean_mask(upper_original, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    
     masks["upper"] = upper_original
     
     # upper_1: 和 lower_negation_for_upper 取反
