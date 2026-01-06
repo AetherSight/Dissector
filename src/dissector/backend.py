@@ -488,14 +488,17 @@ class MLXSAM3(SAM3Base):
             try:
                 # 检查是否需要设置新图片
                 image_id = id(image_pil)
-                if self._current_image_id != image_id:
+                if self._current_image_id != image_id or self._image_state is None:
+                    # 重新设置图片，确保 _image_state 是干净的
+                    # 这对于文本提示很重要，因为每次文本提示都应该基于干净的 image state
                     self._image_state = self.processor.set_image(image_pil)
                     self._current_state = self._image_state
                     self._current_image_id = image_id
                 
                 # 每次文本提示都基于原始的 image state，避免状态被覆盖
                 # 这样多个文本提示可以独立处理，然后在外部合并
-                base_state = self._image_state if self._image_state is not None else self._current_state
+                # 确保总是使用 _image_state（而不是可能被污染的 _current_state）
+                base_state = self._image_state
                 state = self.processor.set_text_prompt(text_prompt, base_state)
                 # 不更新 _current_state，保持 image state 不变
                 
