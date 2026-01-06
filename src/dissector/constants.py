@@ -7,13 +7,17 @@ from typing import Dict, List
 # Body parts prompts - MLX backend (simplified version)
 BODY_PARTS_PROMPTS_MIX = {
     "upper": [
+        "upper body",
         "upper body clothing",
         "waist belt",
+        "chest drape",
         "fabric",
         "accessory",
         "dress",
         "skirt",
-        "clothing strap"
+        "clothing strap",
+        "bra",
+        "vest",
     ],
     "lower_negation_for_upper": [
         "leg",
