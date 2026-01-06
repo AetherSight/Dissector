@@ -1,19 +1,22 @@
 """
 HTTP API service for Dissector gear segmentation.
 """
-import os
-import logging
 import asyncio
-from typing import Optional
-from concurrent.futures import ThreadPoolExecutor
+import io
+import logging
 import multiprocessing
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse
+import os
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
+
 import torch
 from PIL import Image
-import io
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 
 from .pipeline import load_models, process_image, get_device, remove_background
+from .backend import SAM3Base
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -41,6 +44,33 @@ if _max_workers <= 0:
 executor = ThreadPoolExecutor(max_workers=_max_workers)
 
 logger.info(f"Thread pool initialized with {_max_workers} workers")
+
+
+def save_image_for_processing(image_pil: Image.Image, sam3_model: Optional[SAM3Base]) -> str:
+    """
+    Save PIL Image to temporary file with platform-specific format.
+    
+    Platform-specific format selection:
+    - Mac (MLX backend): JPEG preserves skin detection
+    - Windows/Linux (Ultralytics backend): PNG avoids head detection issues
+    
+    Args:
+        image_pil: PIL Image object (must be RGB mode)
+        sam3_model: SAM3 model instance to determine backend type
+    
+    Returns:
+        Path to temporary file
+    """
+    if sam3_model and sam3_model.backend_name == "mlx":
+        # Mac: Use JPEG for MLX backend
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
+            image_pil.save(tmp_file.name, "JPEG", quality=100)
+            return tmp_file.name
+    else:
+        # Windows/Linux: Use PNG for Ultralytics backend
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
+            image_pil.save(tmp_file.name, "PNG")
+            return tmp_file.name
 
 
 @app.on_event("startup")
@@ -115,11 +145,8 @@ async def segment_image(
         if image_pil.mode != "RGB":
             image_pil = image_pil.convert("RGB")
         
-        # Save to temporary file for processing (use PNG for lossless quality)
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
-            image_pil.save(tmp_file.name, "PNG")
-            tmp_path = tmp_file.name
+        # Save to temporary file with platform-specific format
+        tmp_path = save_image_for_processing(image_pil, sam3_model)
         
         try:
             loop = asyncio.get_event_loop()
@@ -171,10 +198,8 @@ async def remove_background_endpoint(
         if image_pil.mode != "RGB":
             image_pil = image_pil.convert("RGB")
         
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
-            image_pil.save(tmp_file.name, "PNG")
-            tmp_path = tmp_file.name
+        # Save to temporary file with platform-specific format
+        tmp_path = save_image_for_processing(image_pil, sam3_model)
         
         try:
             loop = asyncio.get_event_loop()
