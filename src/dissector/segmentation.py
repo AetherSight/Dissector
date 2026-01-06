@@ -288,6 +288,15 @@ def segment_parts_mlx(
     lower_negation_mask = masks_dict.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
     lower_mask_for_upper = masks_dict.get("lower", np.zeros((h, w), dtype=bool))
     
+    # 先计算 全身 - shoes - head - hands（作为 upper_3 和 upper_4 的基础，提高效率）
+    person_minus_extremities = person_mask.copy()
+    for part_name in ["shoes", "head", "hands"]:
+        if part_name in masks_dict:
+            person_minus_extremities = person_minus_extremities & (~masks_dict[part_name])
+    if person_minus_extremities.shape != (h, w):
+        mask_uint8 = (person_minus_extremities.astype(np.uint8) * 255) if person_minus_extremities.dtype == bool else person_minus_extremities.astype(np.uint8)
+        person_minus_extremities = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+    
     # upper: 正常流程得到的 upper，不和 lower_negation_for_upper 取反，但要和头、手、鞋取反
     upper_original = upper_detected.copy()
     # 排除 shoes, head, hands
@@ -318,6 +327,18 @@ def segment_parts_mlx(
     upper_2 = clean_mask(upper_2, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks_dict["upper_2"] = upper_2
     
+    # upper_3: 全身 - shoes - head - hands - lower
+    upper_3 = person_minus_extremities.copy()
+    upper_3 = upper_3 & (~lower_mask_for_upper)
+    upper_3 = clean_mask(upper_3, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks_dict["upper_3"] = upper_3
+    
+    # upper_4: 全身 - shoes - head - hands - lower_negation_for_upper
+    upper_4 = person_minus_extremities.copy()
+    upper_4 = upper_4 & (~lower_negation_mask)
+    upper_4 = clean_mask(upper_4, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks_dict["upper_4"] = upper_4
+    
     if "lower" in masks_dict:
         lower_mask = masks_dict["lower"].copy()
         if "shoes" in masks_dict:
@@ -336,7 +357,9 @@ def segment_parts_mlx(
     # upper: 已经在上面处理了（正常流程，不取反）
     # upper_1: 和 lower_negation_for_upper 取反
     # upper_2: 和 lower 取反
-    for variant_name in ["upper_1", "upper_2"]:
+    # upper_3: 全身 - shoes - head - hands - lower
+    # upper_4: 全身 - shoes - head - hands - lower_negation_for_upper
+    for variant_name in ["upper_1", "upper_2", "upper_3", "upper_4"]:
         if variant_name in masks_dict:
             mask = masks_dict[variant_name]
             cropped_img = white_bg(image_bgr, mask)
@@ -628,6 +651,12 @@ def segment_parts_ultralytics(
     lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
     lower_mask_for_upper = masks.get("lower", np.zeros((h, w), dtype=bool))
     
+    # 先计算 全身 - shoes - head - hands（作为 upper_3 和 upper_4 的基础，提高效率）
+    person_minus_extremities = person_mask.copy()
+    for part_name in ["shoes", "head", "hands"]:
+        if part_name in masks:
+            person_minus_extremities = person_minus_extremities & (~masks[part_name])
+    
     # upper: 正常流程得到的 upper，不和 lower_negation_for_upper 取反，但要和头、手、鞋取反
     upper_original = upper_detected.copy()
     # 排除 shoes, head, hands
@@ -657,6 +686,18 @@ def segment_parts_ultralytics(
     upper_2 = clean_mask(upper_2, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks["upper_2"] = upper_2
     
+    # upper_3: 全身 - shoes - head - hands - lower
+    upper_3 = person_minus_extremities.copy()
+    upper_3 = upper_3 & (~lower_mask_for_upper)
+    upper_3 = clean_mask(upper_3, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks["upper_3"] = upper_3
+    
+    # upper_4: 全身 - shoes - head - hands - lower_negation_for_upper
+    upper_4 = person_minus_extremities.copy()
+    upper_4 = upper_4 & (~lower_negation_mask)
+    upper_4 = clean_mask(upper_4, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks["upper_4"] = upper_4
+    
     masks["shoes"] = clean_mask(masks.get("shoes", np.zeros((h, w), dtype=bool)), min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     
     results: Dict[str, str] = {}
@@ -676,7 +717,9 @@ def segment_parts_ultralytics(
     # upper: 已经在上面处理了（正常流程，不取反）
     # upper_1: 和 lower_negation_for_upper 取反
     # upper_2: 和 lower 取反
-    for variant_name in ["upper_1", "upper_2"]:
+    # upper_3: 全身 - shoes - head - hands - lower
+    # upper_4: 全身 - shoes - head - hands - lower_negation_for_upper
+    for variant_name in ["upper_1", "upper_2", "upper_3", "upper_4"]:
         if variant_name in masks:
             mask = masks[variant_name]
             cropped_img = white_bg(image_bgr, mask)
