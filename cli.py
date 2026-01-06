@@ -111,8 +111,13 @@ def main():
     # Process image segmentation
     logger.info(f"Processing image: {args.image_path}")
     try:
+        # Read image and convert to PIL Image
+        image_pil = Image.open(args.image_path)
+        if image_pil.mode != "RGB":
+            image_pil = image_pil.convert("RGB")
+        
         results = process_image(
-            args.image_path,
+            image_pil,
             processor,
             dino_model,
             sam3_model,

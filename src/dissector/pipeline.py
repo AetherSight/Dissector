@@ -3,7 +3,7 @@ import base64
 import logging
 import platform
 import time
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -111,18 +111,26 @@ def run_grounding_dino(
 
 
 def remove_background(
-    image_path: str,
+    image: Union[str, Image.Image],
     processor: AutoProcessor,
     dino_model: AutoModelForZeroShotObjectDetection,
     sam3_model: SAM3Base,
     device: torch.device,
 ) -> str:
-    image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
-    if image_bgr is None:
-        raise ValueError(f"Cannot read image: {image_path}")
+    # Support both file path and PIL Image for backward compatibility
+    if isinstance(image, str):
+        # Read from file path
+        image_bgr = cv2.imread(image, cv2.IMREAD_COLOR)
+        if image_bgr is None:
+            raise ValueError(f"Cannot read image: {image}")
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        image_pil = Image.fromarray(image_rgb)
+    else:
+        # Use PIL Image directly
+        image_pil = image
     
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    image_pil = Image.fromarray(image_rgb)
+    # Convert PIL Image to numpy array for processing
+    image_rgb = np.array(image_pil)
     h, w = image_rgb.shape[:2]
     
     person_prompts = [
@@ -219,7 +227,7 @@ def remove_background(
 
 
 def process_image(
-    image_path: str,
+    image: Union[str, Image.Image],
     processor: AutoProcessor,
     dino_model: AutoModelForZeroShotObjectDetection,
     sam3_model: SAM3Base,
@@ -228,12 +236,21 @@ def process_image(
     text_threshold: float,
 ) -> Dict[str, str]:
     start_time = time.time()
-    image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
-    if image_bgr is None:
-        print(f"[WARN] cannot read image: {image_path}")
-        return
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    image_pil = Image.fromarray(image_rgb)
+    # Support both file path and PIL Image for backward compatibility
+    if isinstance(image, str):
+        # Read from file path
+        image_bgr = cv2.imread(image, cv2.IMREAD_COLOR)
+        if image_bgr is None:
+            print(f"[WARN] cannot read image: {image}")
+            return
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        image_pil = Image.fromarray(image_rgb)
+    else:
+        # Use PIL Image directly
+        image_pil = image
+    
+    # Convert PIL Image to numpy array for processing
+    image_rgb = np.array(image_pil)
     h, w = image_rgb.shape[:2]
 
     # 统一使用 segment_parts，它会根据后端类型自动选择实现
@@ -276,7 +293,7 @@ def run_batch(
     for img in images:
         logger.info(f"processing {os.path.basename(img)}")
         res = process_image(
-            image_path=img,
+            image=img,
             processor=processor,
             dino_model=dino_model,
             sam3_model=sam3_model,

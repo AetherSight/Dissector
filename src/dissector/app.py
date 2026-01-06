@@ -6,9 +6,7 @@ import io
 import logging
 import multiprocessing
 import os
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
 import torch
 from PIL import Image
@@ -16,7 +14,6 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from .pipeline import load_models, process_image, get_device, remove_background
-from .backend import SAM3Base
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -44,33 +41,6 @@ if _max_workers <= 0:
 executor = ThreadPoolExecutor(max_workers=_max_workers)
 
 logger.info(f"Thread pool initialized with {_max_workers} workers")
-
-
-def save_image_for_processing(image_pil: Image.Image, sam3_model: Optional[SAM3Base]) -> str:
-    """
-    Save PIL Image to temporary file with platform-specific format.
-    
-    Platform-specific format selection:
-    - Mac (MLX backend): JPEG preserves skin detection
-    - Windows/Linux (Ultralytics backend): PNG avoids head detection issues
-    
-    Args:
-        image_pil: PIL Image object (must be RGB mode)
-        sam3_model: SAM3 model instance to determine backend type
-    
-    Returns:
-        Path to temporary file
-    """
-    if sam3_model and sam3_model.backend_name == "mlx":
-        # Mac: Use JPEG for MLX backend
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
-            image_pil.save(tmp_file.name, "JPEG", quality=100)
-            return tmp_file.name
-    else:
-        # Windows/Linux: Use PNG for Ultralytics backend
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
-            image_pil.save(tmp_file.name, "PNG")
-            return tmp_file.name
 
 
 @app.on_event("startup")
@@ -145,28 +115,21 @@ async def segment_image(
         if image_pil.mode != "RGB":
             image_pil = image_pil.convert("RGB")
         
-        # Save to temporary file with platform-specific format
-        tmp_path = save_image_for_processing(image_pil, sam3_model)
+        # Process image directly with PIL Image object
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            executor,
+            process_image,
+            image_pil,
+            processor,
+            dino_model,
+            sam3_model,
+            device,
+            box_threshold,
+            text_threshold,
+        )
         
-        try:
-            loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                executor,
-                process_image,
-                tmp_path,
-                processor,
-                dino_model,
-                sam3_model,
-                device,
-                box_threshold,
-                text_threshold,
-            )
-            
-            return JSONResponse(content=results)
-        finally:
-            # Clean up temporary file
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+        return JSONResponse(content=results)
     
     except Exception as e:
         logger.error(f"Error processing image: {e}", exc_info=True)
@@ -198,25 +161,19 @@ async def remove_background_endpoint(
         if image_pil.mode != "RGB":
             image_pil = image_pil.convert("RGB")
         
-        # Save to temporary file with platform-specific format
-        tmp_path = save_image_for_processing(image_pil, sam3_model)
+        # Process image directly with PIL Image object
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            executor,
+            remove_background,
+            image_pil,
+            processor,
+            dino_model,
+            sam3_model,
+            device,
+        )
         
-        try:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                executor,
-                remove_background,
-                tmp_path,
-                processor,
-                dino_model,
-                sam3_model,
-                device,
-            )
-            
-            return JSONResponse(content={"image": result})
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+        return JSONResponse(content={"image": result})
     
     except Exception as e:
         logger.error(f"Error removing background: {e}", exc_info=True)
