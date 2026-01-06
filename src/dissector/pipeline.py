@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
+import io
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 from .backend import SAM3Factory, SAM3Base
@@ -66,6 +67,28 @@ def load_models(
     ).to(device)
 
     return processor, dino_model, sam3_model
+
+
+def prepare_image_for_backend(
+    image_pil: Image.Image,
+    sam3_model: SAM3Base,
+) -> Image.Image:
+    """
+    根据后端类型，对图像进行一次内存中的重新编码，以模拟不同格式对模型行为的影响：
+    - MLX 后端：使用 JPEG（与 mac 上 CLI 一致，保留皮肤细节）
+    - Ultralytics 后端：使用 PNG（避免 Windows 上 JPEG 导致的头部检测过大）
+    不落地文件，只在内存中编码/解码。
+    """
+    buffer = io.BytesIO()
+    if sam3_model.backend_name == "mlx":
+        # MLX：使用 JPEG
+        image_pil.save(buffer, format="JPEG", quality=100)
+    else:
+        # Ultralytics：使用 PNG
+        image_pil.save(buffer, format="PNG")
+    buffer.seek(0)
+    # 统一成 RGB
+    return Image.open(buffer).convert("RGB")
 
 
 def run_grounding_dino(
@@ -129,6 +152,8 @@ def remove_background(
         # Use PIL Image directly
         image_pil = image
     
+    # 根据后端类型，在内存中进行一次 JPEG/PNG 重编码，统一行为
+    image_pil = prepare_image_for_backend(image_pil, sam3_model)
     # Convert PIL Image to numpy array for processing
     image_rgb = np.array(image_pil)
     h, w = image_rgb.shape[:2]
@@ -249,6 +274,8 @@ def process_image(
         # Use PIL Image directly
         image_pil = image
     
+    # 根据后端类型，在内存中进行一次 JPEG/PNG 重编码，统一行为
+    image_pil = prepare_image_for_backend(image_pil, sam3_model)
     # Convert PIL Image to numpy array for processing
     image_rgb = np.array(image_pil)
     h, w = image_rgb.shape[:2]
