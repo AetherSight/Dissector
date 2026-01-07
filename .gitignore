@@ -9,3 +9,4 @@ env/*/output/
 env/*/*.jpg
 otherlib
 env/mac/*.lock
+models/*.gz

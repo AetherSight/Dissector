@@ -4,8 +4,8 @@ Contains prompts, thresholds and other configurations
 """
 from typing import Dict, List
 
-# Body parts prompts - MLX backend (simplified version)
-BODY_PARTS_PROMPTS_MIX = {
+# Body parts prompts
+BODY_PARTS_PROMPTS = {
     "upper": [
         "upper body",
         "upper body clothing",
@@ -48,15 +48,6 @@ BODY_PARTS_PROMPTS_MIX = {
         "hands",
         "gloves",
         "ring",
-    ],
-}
-
-# Body parts prompts - Ultralytics backend (full version, kept as alternative)
-BODY_PARTS_PROMPTS_ULTRA = {
-    **BODY_PARTS_PROMPTS_MIX,
-    "head": [
-        ["headwear", "head accessory", "face"],
-        ["hair", "hairband", "ears", "earring", "triangular ears"],
     ],
 }
 

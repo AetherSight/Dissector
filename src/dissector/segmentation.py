@@ -1,7 +1,7 @@
 """
-身体部位分割模块
-使用 SAM3 文本提示功能自动分割5个部位：upper, lower, shoes, head, hands
-支持 MLX 和 Ultralytics 后端
+Body parts segmentation module.
+Uses SAM3 text prompts to automatically segment 5 parts: upper, lower, shoes, head, hands.
+Supports MLX and CUDA (Facebook SAM3) backends.
 """
 import numpy as np
 import cv2
@@ -15,8 +15,7 @@ import torch
 
 from .backend import SAM3Base
 from .constants import (
-    BODY_PARTS_PROMPTS_MIX,
-    BODY_PARTS_PROMPTS_ULTRA,
+    BODY_PARTS_PROMPTS,
     DEFAULT_MIN_AREA_RATIO,
     HANDS_MIN_AREA_RATIO,
     HEAD_DILATE_KERNEL_SIZE,
@@ -25,7 +24,6 @@ from .constants import (
     DEFAULT_BOX_THRESHOLD,
     DEFAULT_TEXT_THRESHOLD,
 )
-from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)  # Hide DEBUG output from segmentation module
@@ -90,16 +88,16 @@ def mask_from_boxes(
     debug_dir: str = "",
 ) -> np.ndarray:
     """
-    从边界框列表生成 mask（优化版：支持批量处理）
+    Generate mask from bounding box list (optimized: supports batch processing).
     
     Args:
         image_pil: PIL Image
         boxes: numpy array of shape (N, 4) with [x1, y1, x2, y2]
-        sam3_model: SAM3Base 实例
-        min_area_ratio: 最小区域比例，用于过滤小组件
-        save_debug: 是否保存调试图片
-        debug_prefix: 调试文件前缀
-        debug_dir: 调试文件目录
+        sam3_model: SAM3Base instance
+        min_area_ratio: Minimum area ratio for filtering small components
+        save_debug: Whether to save debug images
+        debug_prefix: Debug file prefix
+        debug_dir: Debug file directory
     
     Returns:
         Binary mask as numpy array
@@ -110,7 +108,6 @@ def mask_from_boxes(
 
     h, w = image_pil.size[1], image_pil.size[0]
     
-    # 尝试批量处理以提高性能
     if hasattr(sam3_model, 'generate_mask_from_bboxes') and len(boxes) > 1:
         try:
             mask_total = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
@@ -122,7 +119,6 @@ def mask_from_boxes(
         except Exception as e:
             logger.warning(f"[SAM3] Batch processing failed: {e}, falling back to loop")
     
-    # 回退到循环处理
     mask_total = None
     individual_masks = []
     for i, box in enumerate(boxes):
@@ -186,7 +182,7 @@ def segment_parts_mlx(
     h, w = image_rgb.shape[:2]
     
     results: Dict[str, str] = {}
-    prompts_dict = BODY_PARTS_PROMPTS_MIX
+    prompts_dict = BODY_PARTS_PROMPTS
     masks_dict: Dict[str, np.ndarray] = {}
     other_parts = ["lower", "shoes", "head", "hands"]
     
@@ -242,7 +238,6 @@ def segment_parts_mlx(
                 continue
         
         if lower_negation_mask_total is None or lower_negation_mask_total.size == 0:
-            # No lower parts detected (e.g., legs/pants are covered), use empty mask
             logger.info("lower_negation_for_upper prompts returned no mask (legs/pants may be covered), using empty mask")
             lower_negation_mask = np.zeros((h, w), dtype=bool)
         else:
@@ -253,7 +248,6 @@ def segment_parts_mlx(
         
         masks_dict["lower_negation_for_upper"] = lower_negation_mask
     else:
-        # lower_negation_for_upper not in prompts, use empty mask
         logger.info("lower_negation_for_upper not in prompts, using empty mask")
         masks_dict["lower_negation_for_upper"] = np.zeros((h, w), dtype=bool)
     
@@ -288,7 +282,6 @@ def segment_parts_mlx(
     lower_negation_mask = masks_dict.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
     lower_mask_for_upper = masks_dict.get("lower", np.zeros((h, w), dtype=bool))
     
-    # 先计算 全身 - shoes - head - hands（作为 upper_3 和 upper_4 的基础，提高效率）
     person_minus_extremities = person_mask.copy()
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks_dict:
@@ -297,9 +290,7 @@ def segment_parts_mlx(
         mask_uint8 = (person_minus_extremities.astype(np.uint8) * 255) if person_minus_extremities.dtype == bool else person_minus_extremities.astype(np.uint8)
         person_minus_extremities = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
     
-    # upper: 正常流程得到的 upper，不和 lower_negation_for_upper 取反，但要和头、手、鞋取反
     upper_original = upper_detected.copy()
-    # 排除 shoes, head, hands
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks_dict:
             upper_original = upper_original & (~masks_dict[part_name])
@@ -309,7 +300,6 @@ def segment_parts_mlx(
     upper_original = clean_mask(upper_original, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks_dict["upper"] = upper_original
     
-    # upper_1: 和 lower_negation_for_upper 取反
     upper_1 = upper_detected.copy()
     upper_1 = upper_1 & (~lower_negation_mask)
     for part_name in ["shoes", "head", "hands"]:
@@ -318,7 +308,6 @@ def segment_parts_mlx(
     upper_1 = clean_mask(upper_1, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks_dict["upper_1"] = upper_1
     
-    # upper_2: 和 lower 取反
     upper_2 = upper_detected.copy()
     upper_2 = upper_2 & (~lower_mask_for_upper)
     for part_name in ["shoes", "head", "hands"]:
@@ -327,13 +316,11 @@ def segment_parts_mlx(
     upper_2 = clean_mask(upper_2, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks_dict["upper_2"] = upper_2
     
-    # upper_3: 全身 - shoes - head - hands - lower
     upper_3 = person_minus_extremities.copy()
     upper_3 = upper_3 & (~lower_mask_for_upper)
     upper_3 = clean_mask(upper_3, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks_dict["upper_3"] = upper_3
     
-    # upper_4: 全身 - shoes - head - hands - lower_negation_for_upper
     upper_4 = person_minus_extremities.copy()
     upper_4 = upper_4 & (~lower_negation_mask)
     upper_4 = clean_mask(upper_4, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
@@ -353,12 +340,6 @@ def segment_parts_mlx(
         cropped_img = white_bg(image_bgr, mask)
         results[part_name] = encode_image(cropped_img, ext=".jpg")
     
-    # 添加 upper 的变体到结果中
-    # upper: 已经在上面处理了（正常流程，不取反）
-    # upper_1: 和 lower_negation_for_upper 取反
-    # upper_2: 和 lower 取反
-    # upper_3: 全身 - shoes - head - hands - lower
-    # upper_4: 全身 - shoes - head - hands - lower_negation_for_upper
     for variant_name in ["upper_1", "upper_2", "upper_3", "upper_4"]:
         if variant_name in masks_dict:
             mask = masks_dict[variant_name]
@@ -374,16 +355,15 @@ def debug_get_mask(
     debug_dir: str = "./tmp",
 ) -> None:
     """
-    调试函数：为指定部位生成所有提示词的 mask 并保存文件
+    Debug function: Generate masks for all prompts of a specified part and save files.
     
     Args:
-        part_name: 部位名称，如 "upper", "lower", "shoes", "head", "hands", "lower_negation_for_upper"
-        image_pil: PIL Image 对象
-        sam3_model: SAM3Base 实例
-        debug_dir: 调试文件保存目录，默认为 "./tmp"
+        part_name: Part name, e.g., "upper", "lower", "shoes", "head", "hands", "lower_negation_for_upper"
+        image_pil: PIL Image object
+        sam3_model: SAM3Base instance
+        debug_dir: Debug file save directory, default is "./tmp"
     """
-    # 获取该部位的提示词
-    prompts_dict = BODY_PARTS_PROMPTS_MIX
+    prompts_dict = BODY_PARTS_PROMPTS
     if part_name not in prompts_dict:
         logger.warning(f"Part '{part_name}' not found in prompts dict")
         return
@@ -391,7 +371,6 @@ def debug_get_mask(
     prompts = prompts_dict[part_name]
     h, w = image_pil.size[1], image_pil.size[0]
     
-    # 确保目录存在
     os.makedirs(debug_dir, exist_ok=True)
     
     logger.info(f"Debug: generating masks for part '{part_name}' with {len(prompts)} prompts")
@@ -420,7 +399,6 @@ def debug_get_mask(
                 logger.warning(f"Prompt '{prompt}' generated mask with 0 pixels")
                 continue
             
-            # 处理 mask 尺寸
             if prompt_mask.shape != (h, w):
                 mask_uint8 = (prompt_mask.astype(np.uint8) * 255) if prompt_mask.dtype == bool else prompt_mask.astype(np.uint8)
                 mask_vis = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST)
@@ -430,11 +408,9 @@ def debug_get_mask(
                 if prompt_mask.dtype != bool:
                     prompt_mask = prompt_mask.astype(bool)
             
-            # 生成文件名
             prompt_safe = prompt.replace(" ", "_").replace("/", "_")
             debug_path = os.path.join(debug_dir, f"{part_name}_prompt_{prompt_idx+1:02d}_{prompt_safe}.png")
             
-            # 保存文件
             success = cv2.imwrite(debug_path, mask_vis)
             if success:
                 logger.info(f"Saved debug mask: {debug_path} (pixels: {mask_pixels})")
@@ -443,7 +419,6 @@ def debug_get_mask(
                 logger.error(f"Failed to save debug mask: {debug_path}")
                 continue
             
-            # 合并到总 mask
             if mask_total is None:
                 mask_total = prompt_mask.copy()
             else:
@@ -453,7 +428,6 @@ def debug_get_mask(
             logger.warning(f"Failed to generate mask for prompt '{prompt}': {e}", exc_info=True)
             continue
     
-    # 保存合成的最终 mask
     if mask_total is not None and np.sum(mask_total) > 0:
         mask_total_vis = (mask_total.astype(np.uint8)) * 255
         merged_path = os.path.join(debug_dir, f"{part_name}_merged_mask.png")
@@ -464,18 +438,16 @@ def debug_get_mask(
         else:
             logger.error(f"Failed to save merged mask: {merged_path}")
         
-        # 保存叠加在原图上的可视化
         try:
             image_rgb = np.array(image_pil)
             overlay = image_rgb.copy()
-            # 使用不同颜色区分不同部位
             color_map = {
-                "upper": [0, 255, 0],  # 绿色
-                "lower": [255, 0, 0],  # 蓝色
-                "shoes": [0, 0, 255],  # 红色
-                "head": [255, 255, 0],  # 青色
-                "hands": [255, 0, 255],  # 洋红色
-                "lower_negation_for_upper": [255, 165, 0],  # 橙色
+                "upper": [0, 255, 0],  # Green
+                "lower": [255, 0, 0],  # Blue
+                "shoes": [0, 0, 255],  # Red
+                "head": [255, 255, 0],  # Cyan
+                "hands": [255, 0, 255],  # Magenta
+                "lower_negation_for_upper": [255, 165, 0],  # Orange
             }
             color = color_map.get(part_name, [0, 255, 0])
             overlay[mask_total] = overlay[mask_total] * 0.7 + np.array(color) * 0.3
@@ -489,11 +461,10 @@ def debug_get_mask(
         except Exception as e:
             logger.warning(f"Failed to create overlay image: {e}")
     else:
-        # 对于 lower_negation_for_upper，如果所有 prompts 都失败，检查是否会使用 fallback
         if part_name == "lower_negation_for_upper":
             logger.warning(f"No valid masks generated for part '{part_name}' from prompts")
             logger.warning("Note: In actual segmentation, this will use empty mask (no fallback)")
-            if "lower" in BODY_PARTS_PROMPTS_MIX:
+            if "lower" in BODY_PARTS_PROMPTS:
                 logger.info("You may want to debug 'lower' part to see what mask would be used as reference")
         else:
             logger.warning(f"No valid masks generated for part '{part_name}', skipping merged mask")
@@ -501,99 +472,112 @@ def debug_get_mask(
 
 def get_prompts_for_backend(backend_name: str, part_name: str):
     """
-    获取后端对应的提示词
+    Get prompts for the specified backend.
     
     Args:
-        backend_name: 后端名称 ("mlx" 或 "ultralytics")
-        part_name: 部位名称
+        backend_name: Backend name ("mlx" or "cuda")
+        part_name: Part name
     
     Returns:
-        可以是 List[str]（单轮检测）或 List[List[str]]（多轮检测）
-        对于 ultralytics 后端，如果 ULTRA 中有定义嵌套列表结构，则返回嵌套列表
-        否则返回 MIX 的普通列表
+        Can be List[str] (single-round detection) or List[List[str]] (multi-round detection)
     """
-    # 对于 ultralytics 后端，优先使用 ULTRA 的提示词（可能包含嵌套列表）
-    if backend_name == "ultralytics" and part_name in BODY_PARTS_PROMPTS_ULTRA:
-        return BODY_PARTS_PROMPTS_ULTRA.get(part_name, [])
-    
-    # 其他情况使用 MIX 的提示词（普通列表）
-    return BODY_PARTS_PROMPTS_MIX.get(part_name, [])
+    return BODY_PARTS_PROMPTS.get(part_name, [])
 
 
-def segment_parts_ultralytics(
+def segment_parts_cuda(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
-    processor: AutoProcessor,
-    dino_model: AutoModelForZeroShotObjectDetection,
-    device: torch.device,
-    box_threshold: float,
-    text_threshold: float,
+    processor=None,
+    dino_model=None,
+    device: Optional[torch.device] = None,
+    box_threshold: float = DEFAULT_BOX_THRESHOLD,
+    text_threshold: float = DEFAULT_TEXT_THRESHOLD,
 ) -> Dict[str, str]:
     """
-    Ultralytics 后端的分割函数
-    采用类似MLX的策略：先检测头手腿脚，然后从整个人体mask中减去这些部位得到upper
+    CUDA (Facebook SAM3) backend segmentation function.
+    Uses SAM3 text prompts for semantic segmentation, consistent with MLX backend.
     """
-    # 延迟导入避免循环导入
-    from .pipeline import run_grounding_dino
-    
     image_rgb = np.array(image_pil)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     h, w = image_rgb.shape[:2]
 
     masks: Dict[str, np.ndarray] = {}
+    prompts_dict = BODY_PARTS_PROMPTS
+    other_parts = ["lower", "shoes", "head", "hands"]
 
     def detect_and_store(key: str, prompts):
         """
-        检测并存储 mask
+        Detect and store mask using SAM3 text prompts.
         
         Args:
-            key: 存储的键名
-            prompts: 可以是以下两种格式：
-                - List[str]: 单轮检测，直接使用所有提示词
-                - List[List[str]]: 多轮检测，每轮检测后合并结果
+            key: Storage key name
+            prompts: Can be in one of two formats:
+                - List[str]: Single-round detection, use all prompts directly
+                - List[List[str]]: Multi-round detection, merge results after each round
         """
-        # 检查 prompts 的类型
         if not prompts:
             masks[key] = np.zeros((h, w), dtype=bool)
             return
         
-        # 检查第一个元素是否是列表（判断是否为嵌套列表）
         if isinstance(prompts[0], list):
-            # 多轮检测：分轮执行，每轮结果合并
             mask_total = None
             for round_idx, round_prompts in enumerate(prompts):
                 logger.debug(f"[ROUND {round_idx + 1}] detecting with prompts: {round_prompts}")
-                dino_res = run_grounding_dino(
-                    image_pil=image_pil,
-                    prompts=round_prompts,
-                    processor=processor,
-                    dino_model=dino_model,
-                    device=device,
-                    box_threshold=box_threshold,
-                    text_threshold=text_threshold,
-                )
-                boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-                round_mask = mask_from_boxes(image_pil, boxes, sam3_model)
+                round_mask_total = None
+                for prompt in round_prompts:
+                    try:
+                        prompt_mask = sam3_model.generate_mask_from_text_prompt(
+                            image_pil=image_pil,
+                            text_prompt=prompt,
+                        )
+                        if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
+                            if prompt_mask.shape != (h, w):
+                                mask_uint8 = (prompt_mask.astype(np.uint8) * 255) if prompt_mask.dtype == bool else prompt_mask.astype(np.uint8)
+                                prompt_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                            else:
+                                if prompt_mask.dtype != bool:
+                                    prompt_mask = prompt_mask.astype(bool)
+                            
+                            if round_mask_total is None:
+                                round_mask_total = prompt_mask.copy()
+                            else:
+                                round_mask_total |= prompt_mask
+                    except Exception as e:
+                        logger.warning(f"Failed to generate mask for prompt '{prompt}': {e}")
+                        continue
                 
-                # 合并到总 mask
-                if mask_total is None:
-                    mask_total = round_mask.copy()
-                else:
-                    mask_total |= round_mask
+                if round_mask_total is not None:
+                    if mask_total is None:
+                        mask_total = round_mask_total.copy()
+                    else:
+                        mask_total |= round_mask_total
+            
             masks[key] = mask_total if mask_total is not None else np.zeros((h, w), dtype=bool)
         else:
-            # 单轮检测：直接使用所有提示词
-            dino_res = run_grounding_dino(
-                image_pil=image_pil,
-                prompts=prompts,
-                processor=processor,
-                dino_model=dino_model,
-                device=device,
-                box_threshold=box_threshold,
-                text_threshold=text_threshold,
-            )
-            boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-            masks[key] = mask_from_boxes(image_pil, boxes, sam3_model)
+            mask_total = None
+            for prompt in prompts:
+                try:
+                    prompt_mask = sam3_model.generate_mask_from_text_prompt(
+                        image_pil=image_pil,
+                        text_prompt=prompt,
+                    )
+                    if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
+                        if prompt_mask.shape != (h, w):
+                            mask_uint8 = (prompt_mask.astype(np.uint8) * 255) if prompt_mask.dtype == bool else prompt_mask.astype(np.uint8)
+                            prompt_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                        else:
+                            if prompt_mask.dtype != bool:
+                                prompt_mask = prompt_mask.astype(bool)
+                        
+                        if mask_total is None:
+                            mask_total = prompt_mask.copy()
+                        else:
+                            mask_total |= prompt_mask
+                except Exception as e:
+                    logger.warning(f"Failed to generate mask for prompt '{prompt}': {e}")
+                    continue
+            
+            masks[key] = mask_total if mask_total is not None else np.zeros((h, w), dtype=bool)
 
     backend_name = sam3_model.backend_name
 
@@ -633,10 +617,38 @@ def segment_parts_ultralytics(
     masks["hands"] = hand_mask
 
     logger.debug("[STEP] detecting lower_negation_for_upper ...")
-    lower_negation_prompts = get_prompts_for_backend(backend_name, "lower_negation_for_upper")
-    detect_and_store("lower_negation_for_upper", lower_negation_prompts)
+    if "lower_negation_for_upper" in prompts_dict:
+        lower_negation_prompts = prompts_dict["lower_negation_for_upper"]
+        lower_negation_mask_total = None
+        for prompt in lower_negation_prompts:
+            try:
+                prompt_mask = sam3_model.generate_mask_from_text_prompt(
+                    image_pil=image_pil,
+                    text_prompt=prompt,
+                )
+                if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
+                    if lower_negation_mask_total is None:
+                        lower_negation_mask_total = prompt_mask.copy()
+                    else:
+                        lower_negation_mask_total |= prompt_mask
+            except Exception as e:
+                continue
+        
+        if lower_negation_mask_total is None or lower_negation_mask_total.size == 0:
+            logger.info("lower_negation_for_upper prompts returned no mask (legs/pants may be covered), using empty mask")
+            lower_negation_mask = np.zeros((h, w), dtype=bool)
+        else:
+            lower_negation_mask = lower_negation_mask_total
+            if lower_negation_mask.shape != (h, w):
+                mask_uint8 = (lower_negation_mask.astype(np.uint8) * 255) if lower_negation_mask.dtype == bool else lower_negation_mask.astype(np.uint8)
+                lower_negation_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+        
+        masks["lower_negation_for_upper"] = lower_negation_mask
+    else:
+        logger.info("lower_negation_for_upper not in prompts, using empty mask")
+        masks["lower_negation_for_upper"] = np.zeros((h, w), dtype=bool)
+    
     lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
-    masks["lower_negation_for_upper"] = lower_negation_mask
 
     logger.debug("[STEP] detecting person/full body ...")
     person_prompts = ["person", "full body", "outfit", "garment", "human"]
@@ -651,15 +663,12 @@ def segment_parts_ultralytics(
     lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
     lower_mask_for_upper = masks.get("lower", np.zeros((h, w), dtype=bool))
     
-    # 先计算 全身 - shoes - head - hands（作为 upper_3 和 upper_4 的基础，提高效率）
     person_minus_extremities = person_mask.copy()
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks:
             person_minus_extremities = person_minus_extremities & (~masks[part_name])
     
-    # upper: 正常流程得到的 upper，不和 lower_negation_for_upper 取反，但要和头、手、鞋取反
     upper_original = upper_detected.copy()
-    # 排除 shoes, head, hands
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks:
             upper_original = upper_original & (~masks[part_name])
@@ -668,7 +677,6 @@ def segment_parts_ultralytics(
     
     masks["upper"] = upper_original
     
-    # upper_1: 和 lower_negation_for_upper 取反
     upper_1 = upper_detected.copy()
     upper_1 = upper_1 & (~lower_negation_mask)
     for part_name in ["shoes", "head", "hands"]:
@@ -677,7 +685,6 @@ def segment_parts_ultralytics(
     upper_1 = clean_mask(upper_1, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks["upper_1"] = upper_1
     
-    # upper_2: 和 lower 取反
     upper_2 = upper_detected.copy()
     upper_2 = upper_2 & (~lower_mask_for_upper)
     for part_name in ["shoes", "head", "hands"]:
@@ -686,13 +693,11 @@ def segment_parts_ultralytics(
     upper_2 = clean_mask(upper_2, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks["upper_2"] = upper_2
     
-    # upper_3: 全身 - shoes - head - hands - lower
     upper_3 = person_minus_extremities.copy()
     upper_3 = upper_3 & (~lower_mask_for_upper)
     upper_3 = clean_mask(upper_3, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks["upper_3"] = upper_3
     
-    # upper_4: 全身 - shoes - head - hands - lower_negation_for_upper
     upper_4 = person_minus_extremities.copy()
     upper_4 = upper_4 & (~lower_negation_mask)
     upper_4 = clean_mask(upper_4, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
@@ -713,12 +718,6 @@ def segment_parts_ultralytics(
         out_img = white_bg(image_bgr, mask_part)
         results[name] = encode_image(out_img, ext=".jpg")
     
-    # 添加 upper 的变体到结果中
-    # upper: 已经在上面处理了（正常流程，不取反）
-    # upper_1: 和 lower_negation_for_upper 取反
-    # upper_2: 和 lower 取反
-    # upper_3: 全身 - shoes - head - hands - lower
-    # upper_4: 全身 - shoes - head - hands - lower_negation_for_upper
     for variant_name in ["upper_1", "upper_2", "upper_3", "upper_4"]:
         if variant_name in masks:
             mask = masks[variant_name]
@@ -737,7 +736,7 @@ def segment_parts(
     box_threshold: float = DEFAULT_BOX_THRESHOLD,
     text_threshold: float = DEFAULT_TEXT_THRESHOLD,
 ) -> Dict[str, str]:
-    """统一的分割入口，根据后端类型调用相应的实现"""
+    """Unified segmentation entry point, calls corresponding implementation based on backend type."""
     if sam3_model.backend_name == "mlx":
         return segment_parts_mlx(
             image_pil=image_pil,
@@ -749,7 +748,7 @@ def segment_parts(
             text_threshold=text_threshold,
         )
     else:
-        return segment_parts_ultralytics(
+        return segment_parts_cuda(
             image_pil=image_pil,
             sam3_model=sam3_model,
             processor=processor,

@@ -3,7 +3,7 @@ import base64
 import logging
 import platform
 import time
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional, Union, Any
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -20,7 +20,6 @@ import numpy as np
 import torch
 from PIL import Image
 import io
-from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 from .backend import SAM3Factory, SAM3Base
 from .segmentation import segment_parts
@@ -41,32 +40,18 @@ def get_device() -> torch.device:
 def load_models(
     device: torch.device,
     sam3_backend: Optional[str] = None,
-) -> Tuple[AutoProcessor, AutoModelForZeroShotObjectDetection, SAM3Base]:
+) -> Tuple[None, None, SAM3Base]:
+    """
+    Load SAM3 model.
+    
+    Returns:
+        Tuple of (None, None, SAM3Base) - Maintains backward compatible interface
+    """
     device_str = "cuda" if device.type == "cuda" else "cpu"
     sam3_model = SAM3Factory.create(backend=sam3_backend, device=device_str)
     logger.info(f"Loaded SAM3 model with backend: {sam3_model.backend_name}")
 
-    if sam3_model.backend_name == "mlx":
-        logger.info("MLX backend detected: skipping Grounding DINO loading.")
-        processor = None
-        dino_model = None
-        return processor, dino_model, sam3_model
-
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    dino_local_dir = os.path.join(project_root, "models", "grounding-dino-base")
-
-    logger.info(f"Loading Grounding DINO from local path: {dino_local_dir}")
-
-    processor = AutoProcessor.from_pretrained(
-        dino_local_dir,
-        local_files_only=True,
-    )
-    dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-        dino_local_dir,
-        local_files_only=True,
-    ).to(device)
-
-    return processor, dino_model, sam3_model
+    return None, None, sam3_model
 
 
 def prepare_image_for_backend(
@@ -74,87 +59,39 @@ def prepare_image_for_backend(
     sam3_model: SAM3Base,
 ) -> Image.Image:
     """
-    根据后端类型，对图像进行一次内存中的重新编码，以模拟不同格式对模型行为的影响：
-    - MLX 后端：使用 JPEG（与 mac 上 CLI 一致，保留皮肤细节）
-    - Ultralytics 后端：使用 PNG（避免 Windows 上 JPEG 导致的头部检测过大）
-    不落地文件，只在内存中编码/解码。
+    Re-encode image in memory based on backend type to simulate different format effects on model behavior:
+    - MLX backend: Use JPEG (consistent with CLI on Mac, preserves skin details)
+    - CUDA backend: Use PNG (avoids oversized head detection caused by JPEG on Windows)
+    No file I/O, only in-memory encoding/decoding.
     """
     buffer = io.BytesIO()
     if sam3_model.backend_name == "mlx":
-        # MLX：使用 JPEG
         image_pil.save(buffer, format="JPEG", quality=100)
     else:
-        # Ultralytics：使用 PNG
         image_pil.save(buffer, format="PNG")
     buffer.seek(0)
-    # 统一成 RGB
     return Image.open(buffer).convert("RGB")
 
 
-def run_grounding_dino(
-    image_pil: Image.Image,
-    prompts: List[str],
-    processor: AutoProcessor,
-    dino_model: AutoModelForZeroShotObjectDetection,
-    device: torch.device,
-    box_threshold: float,
-    text_threshold: float,
-) -> Dict:
-    text = ". ".join(prompts) + "."
-    inputs = processor(images=image_pil, text=text, return_tensors="pt").to(device)
-    with torch.no_grad():
-        outputs = dino_model(**inputs)
-
-    width, height = image_pil.size
-    target_sizes = torch.tensor([[height, width]], device=device)
-
-    try:
-        results = processor.post_process_grounded_object_detection(
-            outputs,
-            input_ids=inputs["input_ids"],
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-            target_sizes=target_sizes,
-        )[0]
-    except TypeError:
-        try:
-            results = processor.post_process_grounded_object_detection(
-                outputs,
-                input_ids=inputs["input_ids"],
-                threshold=box_threshold,
-                target_sizes=target_sizes,
-            )[0]
-        except TypeError:
-            results = processor.post_process_object_detection(
-                outputs,
-                threshold=box_threshold,
-                target_sizes=target_sizes,
-            )[0]
-    return results
 
 
 def remove_background(
     image: Union[str, Image.Image],
-    processor: AutoProcessor,
-    dino_model: AutoModelForZeroShotObjectDetection,
+    processor: Optional[Any],
+    dino_model: Optional[Any],
     sam3_model: SAM3Base,
     device: torch.device,
 ) -> str:
-    # Support both file path and PIL Image for backward compatibility
     if isinstance(image, str):
-        # Read from file path
         image_bgr = cv2.imread(image, cv2.IMREAD_COLOR)
         if image_bgr is None:
             raise ValueError(f"Cannot read image: {image}")
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         image_pil = Image.fromarray(image_rgb)
     else:
-        # Use PIL Image directly
         image_pil = image
     
-    # 根据后端类型，在内存中进行一次 JPEG/PNG 重编码，统一行为
     image_pil = prepare_image_for_backend(image_pil, sam3_model)
-    # Convert PIL Image to numpy array for processing
     image_rgb = np.array(image_pil)
     h, w = image_rgb.shape[:2]
     
@@ -163,79 +100,34 @@ def remove_background(
         "human",
     ]
     
-    # Check if using MLX backend (no Grounding DINO)
-    if sam3_model.backend_name == "mlx" or processor is None or dino_model is None:
-        # Use SAM3 text prompt for MLX backend
-        logger.info("Using SAM3 text prompt for background removal (MLX backend)")
-        person_mask_total = None
-        for prompt in person_prompts:
-            try:
-                prompt_mask = sam3_model.generate_mask_from_text_prompt(
-                    image_pil=image_pil,
-                    text_prompt=prompt,
-                )
-                if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
-                    if prompt_mask.shape != (h, w):
-                        mask_uint8 = (prompt_mask.astype(np.uint8) * 255) if prompt_mask.dtype == bool else prompt_mask.astype(np.uint8)
-                        prompt_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-                    else:
-                        if prompt_mask.dtype != bool:
-                            prompt_mask = prompt_mask.astype(bool)
-                    
-                    if person_mask_total is None:
-                        person_mask_total = prompt_mask.copy()
-                    else:
-                        person_mask_total |= prompt_mask
-            except Exception as e:
-                logger.warning(f"Failed to generate mask for prompt '{prompt}': {e}")
-                continue
-        
-        if person_mask_total is None or np.sum(person_mask_total) == 0:
-            person_mask = np.ones((h, w), dtype=bool)
-        else:
-            person_mask = person_mask_total
-    else:
-        # Use Grounding DINO for ultralytics backend
-        dino_res = run_grounding_dino(
-            image_pil=image_pil,
-            prompts=person_prompts,
-            processor=processor,
-            dino_model=dino_model,
-            device=device,
-            box_threshold=0.25,
-            text_threshold=0.2,
-        )
-        boxes = dino_res["boxes"].cpu().numpy() if "boxes" in dino_res else np.array([])
-        
-        if boxes.size == 0:
-            person_mask = np.ones((h, w), dtype=bool)
-        else:
-            mask_total = None
-            
-            for box in boxes:
-                x1, y1, x2, y2 = box
-                bbox = np.array([[x1, y1, x2, y2]])
-                
-                mask = sam3_model.generate_mask_from_bbox(image_pil, bbox)
-                
-                if mask is None:
-                    continue
-                
-                if mask.ndim != 2:
-                    continue
-                
-                if mask.shape != (h, w):
-                    mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-                
-                if mask_total is None:
-                    mask_total = mask.copy()
+    logger.info("Using SAM3 text prompt for background removal")
+    person_mask_total = None
+    for prompt in person_prompts:
+        try:
+            prompt_mask = sam3_model.generate_mask_from_text_prompt(
+                image_pil=image_pil,
+                text_prompt=prompt,
+            )
+            if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
+                if prompt_mask.shape != (h, w):
+                    mask_uint8 = (prompt_mask.astype(np.uint8) * 255) if prompt_mask.dtype == bool else prompt_mask.astype(np.uint8)
+                    prompt_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
                 else:
-                    mask_total |= mask
-            
-            if mask_total is None or np.sum(mask_total) == 0:
-                person_mask = np.ones((h, w), dtype=bool)
-            else:
-                person_mask = mask_total
+                    if prompt_mask.dtype != bool:
+                        prompt_mask = prompt_mask.astype(bool)
+                
+                if person_mask_total is None:
+                    person_mask_total = prompt_mask.copy()
+                else:
+                    person_mask_total |= prompt_mask
+        except Exception as e:
+            logger.warning(f"Failed to generate mask for prompt '{prompt}': {e}")
+            continue
+    
+    if person_mask_total is None or np.sum(person_mask_total) == 0:
+        person_mask = np.ones((h, w), dtype=bool)
+    else:
+        person_mask = person_mask_total
     
     image_rgba = image_rgb.copy()
     alpha_channel = (person_mask.astype(np.uint8) * 255)
@@ -253,17 +145,15 @@ def remove_background(
 
 def process_image(
     image: Union[str, Image.Image],
-    processor: AutoProcessor,
-    dino_model: AutoModelForZeroShotObjectDetection,
+    processor: Optional[Any],
+    dino_model: Optional[Any],
     sam3_model: SAM3Base,
     device: torch.device,
     box_threshold: float,
     text_threshold: float,
 ) -> Dict[str, str]:
     start_time = time.time()
-    # Support both file path and PIL Image for backward compatibility
     if isinstance(image, str):
-        # Read from file path
         image_bgr = cv2.imread(image, cv2.IMREAD_COLOR)
         if image_bgr is None:
             print(f"[WARN] cannot read image: {image}")
@@ -271,16 +161,12 @@ def process_image(
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         image_pil = Image.fromarray(image_rgb)
     else:
-        # Use PIL Image directly
         image_pil = image
     
-    # 根据后端类型，在内存中进行一次 JPEG/PNG 重编码，统一行为
     image_pil = prepare_image_for_backend(image_pil, sam3_model)
-    # Convert PIL Image to numpy array for processing
     image_rgb = np.array(image_pil)
     h, w = image_rgb.shape[:2]
 
-    # 统一使用 segment_parts，它会根据后端类型自动选择实现
     logger.info(f"[PERF] {sam3_model.backend_name.upper()} backend: using segment_parts")
     segment_start = time.time()
     results = segment_parts(

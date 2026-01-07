@@ -35,18 +35,18 @@ from dissector.pipeline import (
 )
 from dissector.backend import SAM3Factory
 from dissector.segmentation import debug_get_mask
-from dissector.constants import BODY_PARTS_PROMPTS_MIX
+from dissector.constants import BODY_PARTS_PROMPTS
 
 
 def main():
     parser = argparse.ArgumentParser(description='Dissector CLI - Test image segmentation')
     parser.add_argument('image_path', type=str, help='Path to input image')
-    parser.add_argument('--box-threshold', type=float, default=0.3, help='Box threshold for Grounding DINO')
-    parser.add_argument('--text-threshold', type=float, default=0.25, help='Text threshold for Grounding DINO')
+    parser.add_argument('--box-threshold', type=float, default=0.3, help='Box threshold (deprecated, kept for compatibility)')
+    parser.add_argument('--text-threshold', type=float, default=0.25, help='Text threshold (deprecated, kept for compatibility)')
     parser.add_argument('--output-dir', type=str, default='./output', help='Output directory')
     parser.add_argument('--remove-bg', action='store_true', help='Also test background removal')
     parser.add_argument('--debug-part', type=str, nargs='+', 
-                        choices=list(BODY_PARTS_PROMPTS_MIX.keys()),
+                        choices=list(BODY_PARTS_PROMPTS.keys()),
                         help='Debug mode: generate mask images for all prompts of specified part(s). Can specify multiple parts: --debug-part upper lower head')
     parser.add_argument('--debug-dir', type=str, default='./tmp', help='Debug output directory (used with --debug-part)')
     

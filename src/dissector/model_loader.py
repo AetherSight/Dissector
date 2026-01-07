@@ -1,7 +1,7 @@
 """
 Model loader for different platforms.
 Mac: MLX SAM3
-Windows/Linux: Ultralytics SAM
+Windows/Linux: Facebook SAM3 (CUDA)
 """
 import os
 import platform
@@ -12,7 +12,6 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Type hints for model objects
 SAM3Model = Any
 
 
@@ -26,12 +25,12 @@ def load_sam3_model() -> Tuple[SAM3Model, str]:
     Load SAM3 model based on platform.
     
     Returns:
-        Tuple of (model, platform_type) where platform_type is "mlx" or "ultralytics"
+        Tuple of (model, platform_type) where platform_type is "mlx" or "cuda"
     """
     if is_mac():
         return _load_mlx_sam3(), "mlx"
     else:
-        return _load_ultralytics_sam3(), "ultralytics"
+        return _load_cuda_sam3(), "cuda"
 
 
 def _load_mlx_sam3() -> SAM3Model:
@@ -44,13 +43,10 @@ def _load_mlx_sam3() -> SAM3Model:
     cd mlx_sam3 && pip install -e .
     """
     try:
-        # Try importing MLX SAM3
-        # The package name might be 'sam3' (MLX version) or 'mlx_sam3'
         try:
             from sam3 import build_sam3_image_model
             from sam3.model.sam3_image_processor import Sam3Processor
         except ImportError:
-            # Try alternative import path
             try:
                 from mlx_sam3 import build_sam3_image_model
                 from mlx_sam3.model.sam3_image_processor import Sam3Processor
@@ -61,7 +57,6 @@ def _load_mlx_sam3() -> SAM3Model:
         model = build_sam3_image_model()
         processor = Sam3Processor(model, confidence_threshold=0.5)
         
-        # Wrap model and processor together
         class MLXSam3Wrapper:
             def __init__(self, model, processor):
                 self.model = model
@@ -82,61 +77,46 @@ def _load_mlx_sam3() -> SAM3Model:
                 """
                 h, w = image_pil.size[1], image_pil.size[0]
                 
-                # Check if we need to set a new image
-                # Use image id for comparison to avoid storing full image
                 image_id = id(image_pil)
                 if self._current_image != image_id:
                     self._current_state = self.processor.set_image(image_pil)
                     self._current_image = image_id
                 
-                # Convert bbox to format expected by MLX SAM3
-                # MLX SAM3 expects boxes in format [x0, y0, x1, y1] normalized to [0, 1]
                 x1, y1, x2, y2 = bbox[0]
                 box_normalized = np.array([[x1 / w, y1 / h, x2 / w, y2 / h]], dtype=np.float32)
                 
-                # Try different API methods for setting box prompt
                 try:
-                    # Try set_box_prompt method
                     if hasattr(self.processor, 'set_box_prompt'):
                         state = self.processor.set_box_prompt(box_normalized, self._current_state)
                     elif hasattr(self.processor, 'set_bbox_prompt'):
                         state = self.processor.set_bbox_prompt(box_normalized, self._current_state)
                     else:
-                        # Fallback: try to set box directly in state
                         state = self._current_state.copy() if isinstance(self._current_state, dict) else self._current_state
                         if isinstance(state, dict):
                             state['boxes'] = box_normalized
                         else:
-                            # If state is not a dict, try to call processor with box
                             state = self.processor(box_normalized, self._current_state)
                 except Exception as e:
                     logger.warning(f"Failed to set box prompt with primary method: {e}, trying alternative")
-                    # Alternative: try to use the processor directly
                     try:
                         state = self.processor(box_normalized, self._current_state)
                     except:
-                        # Last resort: return empty mask
                         logger.error(f"Failed to generate mask from bbox: {e}")
                         return np.zeros((h, w), dtype=bool)
                 
-                # Get masks from state
                 if isinstance(state, dict):
                     masks = state.get("masks", [])
                 else:
-                    # If state is not a dict, try to get masks attribute
                     masks = getattr(state, "masks", [])
                 
                 if not masks or len(masks) == 0:
                     return np.zeros((h, w), dtype=bool)
                 
-                # Convert mask to numpy array
                 mask = masks[0] if isinstance(masks[0], np.ndarray) else np.array(masks[0])
                 
-                # Ensure mask is boolean and correct shape
                 if mask.dtype != bool:
                     mask = mask > 0.5 if mask.max() <= 1.0 else mask > 127
                 
-                # Ensure correct shape
                 if mask.shape != (h, w):
                     from PIL import Image as PILImage
                     mask_uint8 = (mask.astype(np.uint8) * 255) if mask.dtype == bool else mask.astype(np.uint8)
@@ -152,54 +132,33 @@ def _load_mlx_sam3() -> SAM3Model:
         raise RuntimeError("MLX SAM3 is required on macOS. Install with: pip install mlx-sam3") from e
 
 
-def _load_ultralytics_sam3() -> SAM3Model:
-    """Load Ultralytics SAM3 model for Windows/Linux."""
-    from ultralytics import SAM
+def _load_cuda_sam3() -> SAM3Model:
+    """Load Facebook SAM3 model for Windows/Linux (CUDA)."""
+    from sam3.model_builder import build_sam3_image_model
     
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    models_dir = os.path.join(PROJECT_ROOT, "models")
     
-    def find_sam3_checkpoint() -> str:
-        import glob
-        model_path = os.getenv("SAM3_MODEL_PATH")
-        if model_path:
-            if os.path.exists(model_path):
-                return model_path
-            model_dir = os.path.dirname(model_path) if os.path.dirname(model_path) else "."
-            model_base = os.path.basename(model_path) if os.path.basename(model_path) else "sam3.pt"
-        else:
-            model_dir = "/models" if os.path.exists("/models") else os.path.join(PROJECT_ROOT, "models")
-            model_base = "sam3.pt"
-        
-        full_path = os.path.join(model_dir, model_base)
-        if os.path.exists(full_path):
-            return full_path
-        
-        patterns = [
-            os.path.join(model_dir, "sam3-*-of-*.pt"),
-        ]
-        
-        for pattern in patterns:
-            shards = sorted(glob.glob(pattern))
-            if len(shards) >= 2:
-                logger.info(f"Found {len(shards)} sharded checkpoint files, merging...")
-                merged_path = os.path.join(model_dir, "sam3.pt")
-                if not os.path.exists(merged_path):
-                    import torch
-                    checkpoint = {}
-                    for shard in shards:
-                        logger.info(f"Loading shard: {shard}")
-                        shard_data = torch.load(shard, map_location="cpu")
-                        if isinstance(shard_data, dict):
-                            checkpoint.update(shard_data)
-                        else:
-                            checkpoint.update(shard_data.state_dict() if hasattr(shard_data, 'state_dict') else {})
-                    logger.info(f"Saving merged checkpoint to: {merged_path}")
-                    torch.save(checkpoint, merged_path)
-                return merged_path
-        
-        return full_path
+    bpe_path = os.path.join(models_dir, "bpe_simple_vocab_16e6.txt.gz")
+    if not os.path.exists(bpe_path):
+        logger.warning(f"BPE file not found at {bpe_path}, using default path")
+        bpe_path = None
     
-    checkpoint_path = find_sam3_checkpoint()
-    logger.info(f"Loading Ultralytics SAM3 model from: {checkpoint_path}")
-    return SAM(checkpoint_path)
+    checkpoint_path = os.path.join(models_dir, "sam3.pt")
+    if not os.path.exists(checkpoint_path):
+        logger.info(f"Model checkpoint not found at {checkpoint_path}, Facebook SAM3 will download it")
+        checkpoint_path = None
+    if bpe_path and checkpoint_path:
+        logger.info(f"Loading Facebook SAM3 model from: {checkpoint_path}")
+        logger.info(f"Using BPE file from: {bpe_path}")
+        return build_sam3_image_model(checkpoint_path=checkpoint_path, bpe_path=bpe_path)
+    elif bpe_path:
+        logger.info(f"Using BPE file from: {bpe_path}")
+        return build_sam3_image_model(bpe_path=bpe_path)
+    elif checkpoint_path:
+        logger.info(f"Loading model from: {checkpoint_path}")
+        return build_sam3_image_model(checkpoint_path=checkpoint_path)
+    else:
+        logger.info("Using default paths (Facebook SAM3 will download if needed)")
+        return build_sam3_image_model()
 

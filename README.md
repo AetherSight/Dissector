@@ -4,7 +4,7 @@ FFXIV glamour gear segmentation microservice. Segments head, upper, lower, shoes
 
 ## Overview
 
-Dissector uses SAM3 and Grounding DINO for high-precision gear segmentation. Provides HTTP API for microservice deployment.
+Dissector uses SAM3 for high-precision gear segmentation. Provides HTTP API for microservice deployment.
 
 ## Development
 
@@ -51,8 +51,8 @@ poetry install
 ```
 
 **Dependencies:**
-- **Windows/Linux**: Ultralytics, PyTorch 2.7.0 (CUDA 12.6 recommended)
-- **macOS**: MLX, MLX-LM, MLX SAM3 (from GitHub), PyTorch >=2.0.0
+- **Windows/Linux**: Facebook SAM3, PyTorch 2.7.0 (CUDA 12.6 recommended)
+- **macOS**: MLX, MLX SAM3 (from GitHub)
 
 ### Windows/Linux CUDA Support (Optional)
 
@@ -70,18 +70,17 @@ pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorc
 - Python 3.13+ (required for MLX SAM3)
 - MLX framework (optimized for Apple Silicon)
 - MLX SAM3 (automatically installed from GitHub via Poetry)
-- PyTorch >=2.0.0 (for Grounding DINO)
 
 **Windows/Linux dependencies:**
 - Python 3.12+
 - PyTorch 2.7.0 (CUDA 12.6 recommended)
-- Ultralytics SAM3
+- Facebook SAM3
 
 ### Automatic Backend Selection
 
 The application automatically selects the backend based on the system platform:
 - **macOS**: Automatically uses MLX backend
-- **Windows/Linux**: Automatically uses Ultralytics backend
+- **Windows/Linux**: Automatically uses CUDA backend (Facebook SAM3)
 
 No manual configuration required!
 
@@ -92,8 +91,8 @@ If you need to manually specify the backend:
 ```python
 from dissector.backend import SAM3Factory
 
-# Force Ultralytics backend
-sam3_model = SAM3Factory.create(backend="ultralytics", device="cuda")
+# Force CUDA backend (Windows/Linux)
+sam3_model = SAM3Factory.create(backend="cuda", device="cuda")
 
 # Force MLX backend (macOS only)
 sam3_model = SAM3Factory.create(backend="mlx")
@@ -120,6 +119,5 @@ docker run -d \
 
 - Python 3.12+
 - PyTorch >= 2.0.0 (CUDA 12.6 recommended for Windows/Linux)
-- Ultralytics >= 8.3.247 (Windows/Linux) or MLX >= 0.19.0 (macOS)
+- Facebook SAM3 (Windows/Linux) or MLX SAM3 >= 0.19.0 (macOS)
 - FastAPI
-- Grounding DINO (via transformers)
