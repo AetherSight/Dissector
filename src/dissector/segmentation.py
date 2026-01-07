@@ -6,7 +6,7 @@ Supports MLX and CUDA (Facebook SAM3) backends.
 import numpy as np
 import cv2
 from PIL import Image
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional
 import base64
 import logging
 import os
@@ -77,96 +77,6 @@ def clean_mask(mask: np.ndarray, min_area_ratio: float = DEFAULT_MIN_AREA_RATIO)
             keep[i] = True
     cleaned = keep[labels]
     return cleaned.astype(bool)
-
-def mask_from_boxes(
-    image_pil: Image.Image,
-    boxes: np.ndarray,
-    sam3_model: SAM3Base,
-    min_area_ratio: float = DEFAULT_MIN_AREA_RATIO,
-    save_debug: bool = False,
-    debug_prefix: str = "",
-    debug_dir: str = "",
-) -> np.ndarray:
-    """
-    Generate mask from bounding box list (optimized: supports batch processing).
-    
-    Args:
-        image_pil: PIL Image
-        boxes: numpy array of shape (N, 4) with [x1, y1, x2, y2]
-        sam3_model: SAM3Base instance
-        min_area_ratio: Minimum area ratio for filtering small components
-        save_debug: Whether to save debug images
-        debug_prefix: Debug file prefix
-        debug_dir: Debug file directory
-    
-    Returns:
-        Binary mask as numpy array
-    """
-    if boxes.size == 0:
-        h, w = image_pil.size[1], image_pil.size[0]
-        return np.zeros((h, w), dtype=bool)
-
-    h, w = image_pil.size[1], image_pil.size[0]
-    
-    if hasattr(sam3_model, 'generate_mask_from_bboxes') and len(boxes) > 1:
-        try:
-            mask_total = sam3_model.generate_mask_from_bboxes(image_pil, boxes)
-            if mask_total is not None and mask_total.ndim == 2 and mask_total.shape == (h, w):
-                kernel = np.ones((MASK_CLOSE_KERNEL_SIZE, MASK_CLOSE_KERNEL_SIZE), np.uint8)
-                mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
-                mask_total = clean_mask(mask_total, min_area_ratio=min_area_ratio)
-                return mask_total
-        except Exception as e:
-            logger.warning(f"[SAM3] Batch processing failed: {e}, falling back to loop")
-    
-    mask_total = None
-    individual_masks = []
-    for i, box in enumerate(boxes):
-        x1, y1, x2, y2 = box
-        bbox = np.array([[x1, y1, x2, y2]])
-        
-        mask = sam3_model.generate_mask_from_bbox(image_pil, bbox)
-        
-        if mask is None:
-            continue
-        
-        if mask.ndim != 2:
-            continue
-        
-        if mask.shape != (h, w):
-            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-        
-        if np.sum(mask) == 0:
-            continue
-
-        if save_debug and debug_prefix and debug_dir:
-            mask_vis = (mask.astype(np.uint8)) * 255
-            debug_path = os.path.join(debug_dir, f"{debug_prefix}_box_{i}_mask.png")
-            os.makedirs(debug_dir, exist_ok=True)
-            cv2.imwrite(debug_path, mask_vis)
-            logger.info(f"Saved individual mask: {debug_path}")
-
-        individual_masks.append(mask)
-        if mask_total is None:
-            mask_total = mask.copy()
-        else:
-            mask_total |= mask
-
-    if mask_total is None:
-        return np.zeros((h, w), dtype=bool)
-
-    if save_debug and debug_prefix and debug_dir:
-        mask_vis = (mask_total.astype(np.uint8)) * 255
-        debug_path = os.path.join(debug_dir, f"{debug_prefix}_merged_mask.png")
-        os.makedirs(debug_dir, exist_ok=True)
-        cv2.imwrite(debug_path, mask_vis)
-        logger.info(f"Saved merged mask: {debug_path}")
-
-    kernel = np.ones((3, 3), np.uint8)
-    mask_total = cv2.morphologyEx(mask_total.astype(np.uint8), cv2.MORPH_CLOSE, kernel).astype(bool)
-    mask_total = clean_mask(mask_total, min_area_ratio=min_area_ratio)
-    return mask_total
-
 
 def segment_parts_mlx(
     image_pil: Image.Image,

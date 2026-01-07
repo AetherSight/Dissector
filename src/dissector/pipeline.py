@@ -1,9 +1,8 @@
 import os
 import base64
 import logging
-import platform
 import time
-from typing import Dict, List, Tuple, Optional, Union, Any
+from typing import Dict, Tuple, Optional, Union, Any
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -73,8 +72,6 @@ def prepare_image_for_backend(
     return Image.open(buffer).convert("RGB")
 
 
-
-
 def remove_background(
     image: Union[str, Image.Image],
     processor: Optional[Any],
@@ -135,7 +132,6 @@ def remove_background(
     
     image_pil_rgba = Image.fromarray(image_rgba, "RGBA")
     
-    import io
     buffer = io.BytesIO()
     image_pil_rgba.save(buffer, format="PNG")
     buffer.seek(0)
@@ -152,12 +148,11 @@ def process_image(
     box_threshold: float,
     text_threshold: float,
 ) -> Dict[str, str]:
-    start_time = time.time()
     if isinstance(image, str):
         image_bgr = cv2.imread(image, cv2.IMREAD_COLOR)
         if image_bgr is None:
-            print(f"[WARN] cannot read image: {image}")
-            return
+            logger.warning(f"Cannot read image: {image}")
+            return {}
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         image_pil = Image.fromarray(image_rgb)
     else:
@@ -181,41 +176,4 @@ def process_image(
     segment_time = time.time() - segment_start
     logger.info(f"[PERF] segment_parts: {segment_time:.2f}s")
     return results
-
-
-def run_batch(
-    input_dir: str,
-    output_dir: str,
-    box_threshold: float = 0.3,
-    text_threshold: float = 0.25,
-) -> List[Dict[str, str]]:
-    device = get_device()
-    logger.info(f"device: {device} (platform: {platform.system()})")
-    logger.info("loading models ...")
-    processor, dino_model, sam3_model = load_models(device)
-    logger.info("models loaded.")
-
-    images = [
-        os.path.join(input_dir, f)
-        for f in os.listdir(input_dir)
-        if f.lower().endswith((".jpg", ".jpeg", ".png"))
-    ]
-    logger.info(f"found {len(images)} images.")
-
-    results_all: List[Dict[str, str]] = []
-    for img in images:
-        logger.info(f"processing {os.path.basename(img)}")
-        res = process_image(
-            image=img,
-            processor=processor,
-            dino_model=dino_model,
-            sam3_model=sam3_model,
-            device=device,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
-        )
-        results_all.append(res)
-        logger.info(f"done {os.path.basename(img)}")
-
-    return results_all
 

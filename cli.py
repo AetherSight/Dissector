@@ -33,7 +33,6 @@ from dissector.pipeline import (
     get_device,
     remove_background,
 )
-from dissector.backend import SAM3Factory
 from dissector.segmentation import debug_get_mask
 from dissector.constants import BODY_PARTS_PROMPTS
 
