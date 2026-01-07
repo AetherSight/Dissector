@@ -369,6 +369,9 @@ class MLXSAM3(SAM3Base):
             
             logger.info("Loading MLX SAM3 model...")
             
+            # MLX SAM3 does not support PyTorch .pt format
+            # It uses its own model format and will auto-download if needed
+            # Only pass bpe_path if it exists, let MLX SAM3 handle model loading
             PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             models_dir = os.path.join(PROJECT_ROOT, "models")
             
@@ -377,23 +380,11 @@ class MLXSAM3(SAM3Base):
                 logger.warning(f"BPE file not found at {bpe_path}, using default path")
                 bpe_path = None
             
-            if model_path is None:
-                checkpoint_path = os.path.join(models_dir, "sam3.pt")
-                if not os.path.exists(checkpoint_path):
-                    logger.info(f"Model checkpoint not found at {checkpoint_path}, MLX SAM3 will download it")
-                    checkpoint_path = None
-            else:
-                checkpoint_path = model_path
-            if bpe_path and checkpoint_path:
-                logger.info(f"Loading model from: {checkpoint_path}")
-                logger.info(f"Using BPE file from: {bpe_path}")
-                self.model = build_sam3_image_model(checkpoint_path=checkpoint_path, bpe_path=bpe_path)
-            elif bpe_path:
+            # MLX SAM3 will auto-download model if needed
+            # Do not pass checkpoint_path for .pt files as MLX doesn't support PyTorch format
+            if bpe_path:
                 logger.info(f"Using BPE file from: {bpe_path}")
                 self.model = build_sam3_image_model(bpe_path=bpe_path)
-            elif checkpoint_path:
-                logger.info(f"Loading model from: {checkpoint_path}")
-                self.model = build_sam3_image_model(checkpoint_path=checkpoint_path)
             else:
                 logger.info("Using default paths (MLX SAM3 will download if needed)")
                 self.model = build_sam3_image_model()
