@@ -20,8 +20,6 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Dissector", version="0.1.0")
 
-processor = None
-dino_model = None
 sam3_model = None
 device = None
 
@@ -46,13 +44,13 @@ logger.info(f"Thread pool initialized with {_max_workers} workers")
 @app.on_event("startup")
 async def load_models_on_startup():
     """Load models when the service starts."""
-    global processor, dino_model, sam3_model, device
+    global sam3_model, device
     
     device = get_device()
     logger.info(f"Loading models on device: {device}")
     
     try:
-        processor, dino_model, sam3_model = load_models(
+        sam3_model = load_models(
             device=device
         )
         logger.info(f"Models loaded successfully (SAM3 backend: {sam3_model.backend_name})")
@@ -111,8 +109,6 @@ async def segment_image(
             executor,
             process_image,
             image_pil,
-            processor,
-            dino_model,
             sam3_model,
             device,
             box_threshold,
@@ -153,8 +149,6 @@ async def remove_background_endpoint(
             executor,
             remove_background,
             image_pil,
-            processor,
-            dino_model,
             sam3_model,
             device,
         )

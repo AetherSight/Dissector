@@ -34,12 +34,12 @@ def get_device() -> torch.device:
 def load_models(
     device: torch.device,
     sam3_backend: Optional[str] = None,
-) -> Tuple[None, None, SAM3Base]:
+) -> SAM3Base:
     device_str = "cuda" if device.type == "cuda" else "cpu"
     sam3_model = SAM3Factory.create(backend=sam3_backend, device=device_str)
     logger.info(f"Loaded SAM3 model with backend: {sam3_model.backend_name}")
 
-    return None, None, sam3_model
+    return sam3_model
 
 
 def prepare_image_for_backend(
@@ -57,8 +57,6 @@ def prepare_image_for_backend(
 
 def remove_background(
     image: Union[str, Image.Image],
-    processor: Optional[Any],
-    dino_model: Optional[Any],
     sam3_model: SAM3Base,
     device: torch.device,
 ) -> str:
@@ -124,8 +122,6 @@ def remove_background(
 
 def process_image(
     image: Union[str, Image.Image],
-    processor: Optional[Any],
-    dino_model: Optional[Any],
     sam3_model: SAM3Base,
     device: torch.device,
     box_threshold: float,
@@ -150,8 +146,6 @@ def process_image(
     results = segment_parts(
         image_pil=image_pil,
         sam3_model=sam3_model,
-        processor=processor,
-        dino_model=dino_model,
         device=device,
         box_threshold=box_threshold,
         text_threshold=text_threshold,

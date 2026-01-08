@@ -81,8 +81,6 @@ def clean_mask(mask: np.ndarray, min_area_ratio: float = DEFAULT_MIN_AREA_RATIO)
 def segment_parts_mlx(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
-    processor=None,
-    dino_model=None,
     device: Optional[torch.device] = None,
     box_threshold: float = DEFAULT_BOX_THRESHOLD,
     text_threshold: float = DEFAULT_TEXT_THRESHOLD,
@@ -388,8 +386,6 @@ def get_prompts_for_backend(backend_name: str, part_name: str):
 def segment_parts_cuda(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
-    processor=None,
-    dino_model=None,
     device: Optional[torch.device] = None,
     box_threshold: float = DEFAULT_BOX_THRESHOLD,
     text_threshold: float = DEFAULT_TEXT_THRESHOLD,
@@ -631,8 +627,6 @@ def segment_parts_cuda(
 def segment_parts(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
-    processor=None,
-    dino_model=None,
     device: Optional[torch.device] = None,
     box_threshold: float = DEFAULT_BOX_THRESHOLD,
     text_threshold: float = DEFAULT_TEXT_THRESHOLD,
@@ -642,8 +636,6 @@ def segment_parts(
         return segment_parts_mlx(
             image_pil=image_pil,
             sam3_model=sam3_model,
-            processor=processor,
-            dino_model=dino_model,
             device=device,
             box_threshold=box_threshold,
             text_threshold=text_threshold,
@@ -652,8 +644,6 @@ def segment_parts(
         return segment_parts_cuda(
             image_pil=image_pil,
             sam3_model=sam3_model,
-            processor=processor,
-            dino_model=dino_model,
             device=device,
             box_threshold=box_threshold,
             text_threshold=text_threshold,

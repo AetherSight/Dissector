@@ -58,7 +58,7 @@ def main():
     logger.info(f"Device: {device}")
     
     try:
-        processor, dino_model, sam3_model = load_models(
+        sam3_model = load_models(
             device=device
         )
         logger.info(f"SAM3 backend: {sam3_model.backend_name}")
@@ -102,8 +102,6 @@ def main():
         
         results = process_image(
             image_pil,
-            processor,
-            dino_model,
             sam3_model,
             device,
             args.box_threshold,
@@ -146,8 +144,6 @@ def main():
         try:
             bg_result = remove_background(
                 args.image_path,
-                processor,
-                dino_model,
                 sam3_model,
                 device,
             )
