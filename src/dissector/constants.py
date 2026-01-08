@@ -51,10 +51,6 @@ BODY_PARTS_PROMPTS = {
     ],
 }
 
-# Default threshold configuration
-DEFAULT_BOX_THRESHOLD = 0.3
-DEFAULT_TEXT_THRESHOLD = 0.25
-
 # Mask processing configuration
 DEFAULT_MIN_AREA_RATIO = 0.001
 HANDS_MIN_AREA_RATIO = 0.0005

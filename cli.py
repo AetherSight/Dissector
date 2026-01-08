@@ -34,8 +34,6 @@ from dissector.constants import BODY_PARTS_PROMPTS
 def main():
     parser = argparse.ArgumentParser(description='Dissector CLI - Test image segmentation')
     parser.add_argument('image_path', type=str, help='Path to input image')
-    parser.add_argument('--box-threshold', type=float, default=0.3, help='Box threshold (deprecated, kept for compatibility)')
-    parser.add_argument('--text-threshold', type=float, default=0.25, help='Text threshold (deprecated, kept for compatibility)')
     parser.add_argument('--output-dir', type=str, default='./output', help='Output directory')
     parser.add_argument('--remove-bg', action='store_true', help='Also test background removal')
     parser.add_argument('--debug-part', type=str, nargs='+', 
@@ -104,8 +102,6 @@ def main():
             image_pil,
             sam3_model,
             device,
-            args.box_threshold,
-            args.text_threshold,
         )
         
         if not results:

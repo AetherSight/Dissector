@@ -124,8 +124,6 @@ def process_image(
     image: Union[str, Image.Image],
     sam3_model: SAM3Base,
     device: torch.device,
-    box_threshold: float,
-    text_threshold: float,
 ) -> Dict[str, str]:
     if isinstance(image, str):
         image_bgr = cv2.imread(image, cv2.IMREAD_COLOR)
@@ -146,9 +144,6 @@ def process_image(
     results = segment_parts(
         image_pil=image_pil,
         sam3_model=sam3_model,
-        device=device,
-        box_threshold=box_threshold,
-        text_threshold=text_threshold,
     )
     segment_time = time.time() - segment_start
     logger.info(f"[PERF] segment_parts: {segment_time:.2f}s")

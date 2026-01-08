@@ -21,8 +21,6 @@ from .constants import (
     HEAD_DILATE_KERNEL_SIZE,
     HANDS_DILATE_KERNEL_SIZE,
     MASK_CLOSE_KERNEL_SIZE,
-    DEFAULT_BOX_THRESHOLD,
-    DEFAULT_TEXT_THRESHOLD,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,9 +79,6 @@ def clean_mask(mask: np.ndarray, min_area_ratio: float = DEFAULT_MIN_AREA_RATIO)
 def segment_parts_mlx(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
-    device: Optional[torch.device] = None,
-    box_threshold: float = DEFAULT_BOX_THRESHOLD,
-    text_threshold: float = DEFAULT_TEXT_THRESHOLD,
 ) -> Dict[str, str]:
     image_rgb = np.array(image_pil)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
@@ -386,9 +381,6 @@ def get_prompts_for_backend(backend_name: str, part_name: str):
 def segment_parts_cuda(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
-    device: Optional[torch.device] = None,
-    box_threshold: float = DEFAULT_BOX_THRESHOLD,
-    text_threshold: float = DEFAULT_TEXT_THRESHOLD,
 ) -> Dict[str, str]:
     """
     CUDA (Facebook SAM3) backend segmentation function.
@@ -627,24 +619,15 @@ def segment_parts_cuda(
 def segment_parts(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
-    device: Optional[torch.device] = None,
-    box_threshold: float = DEFAULT_BOX_THRESHOLD,
-    text_threshold: float = DEFAULT_TEXT_THRESHOLD,
 ) -> Dict[str, str]:
     """Unified segmentation entry point, calls corresponding implementation based on backend type."""
     if sam3_model.backend_name == "mlx":
         return segment_parts_mlx(
             image_pil=image_pil,
             sam3_model=sam3_model,
-            device=device,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
         )
     else:
         return segment_parts_cuda(
             image_pil=image_pil,
             sam3_model=sam3_model,
-            device=device,
-            box_threshold=box_threshold,
-            text_threshold=text_threshold,
         )

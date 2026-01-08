@@ -83,8 +83,6 @@ async def health_check():
 @app.post("/segment")
 async def segment_image(
     file: UploadFile = File(...),
-    box_threshold: float = 0.3,
-    text_threshold: float = 0.25,
 ):
     """
     Segment gear from uploaded image.
@@ -111,8 +109,6 @@ async def segment_image(
             image_pil,
             sam3_model,
             device,
-            box_threshold,
-            text_threshold,
         )
         
         return JSONResponse(content=results)

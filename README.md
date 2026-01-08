@@ -51,7 +51,7 @@ poetry install
 ```
 
 **Dependencies:**
-- **Windows/Linux**: Facebook SAM3, PyTorch 2.7.0 (CUDA 12.6 recommended)
+- **Windows/Linux**: Facebook SAM3, PyTorch 2.7.0 (CUDA 12.6)
 - **macOS**: MLX, MLX SAM3 (from GitHub)
 
 ### Windows/Linux CUDA Support (Optional)
@@ -67,13 +67,13 @@ pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorc
 ```
 
 **macOS dependencies:**
-- Python 3.13+ (required for MLX SAM3)
-- MLX framework (optimized for Apple Silicon)
-- MLX SAM3 (automatically installed from GitHub via Poetry)
+- Python 3.13+
+- MLX framework
+- MLX SAM3
 
 **Windows/Linux dependencies:**
 - Python 3.12+
-- PyTorch 2.7.0 (CUDA 12.6 recommended)
+- PyTorch 2.7.0 (CUDA 12.6)
 - Facebook SAM3
 
 ### Automatic Backend Selection
@@ -112,7 +112,6 @@ docker run -d \
 
 - `GET /health` - Health check
 - `POST /segment` - Segment image (multipart/form-data)
-  - Query params: `box_threshold` (default: 0.3), `text_threshold` (default: 0.25)
   - Returns: JSON with base64-encoded images (upper, lower, shoes, head, hands)
 
 ## Requirements
