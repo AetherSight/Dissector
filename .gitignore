@@ -10,4 +10,5 @@ env/*/*.jpg
 env/*/*.jpeg
 otherlib
 env/mac/*.lock
-models/*.gz
+models/
+!models/.gitkeep
