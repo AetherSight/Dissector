@@ -25,11 +25,6 @@ from .segmentation import segment_parts
 
 
 def get_device() -> torch.device:
-    """
-    Get the best available device for PyTorch.
-    Priority: CUDA > CPU
-    On macOS with MLX backend, use CPU to avoid concurrency issues.
-    """
     if torch.cuda.is_available():
         return torch.device("cuda")
     else:
@@ -40,12 +35,6 @@ def load_models(
     device: torch.device,
     sam3_backend: Optional[str] = None,
 ) -> Tuple[None, None, SAM3Base]:
-    """
-    Load SAM3 model.
-    
-    Returns:
-        Tuple of (None, None, SAM3Base) - Maintains backward compatible interface
-    """
     device_str = "cuda" if device.type == "cuda" else "cpu"
     sam3_model = SAM3Factory.create(backend=sam3_backend, device=device_str)
     logger.info(f"Loaded SAM3 model with backend: {sam3_model.backend_name}")
@@ -57,12 +46,6 @@ def prepare_image_for_backend(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
 ) -> Image.Image:
-    """
-    Re-encode image in memory based on backend type to simulate different format effects on model behavior:
-    - MLX backend: Use JPEG (consistent with CLI on Mac, preserves skin details)
-    - CUDA backend: Use PNG (avoids oversized head detection caused by JPEG on Windows)
-    No file I/O, only in-memory encoding/decoding.
-    """
     buffer = io.BytesIO()
     if sam3_model.backend_name == "mlx":
         image_pil.save(buffer, format="JPEG", quality=100)

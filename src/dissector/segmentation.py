@@ -264,15 +264,6 @@ def debug_get_mask(
     sam3_model: SAM3Base,
     debug_dir: str = "./tmp",
 ) -> None:
-    """
-    Debug function: Generate masks for all prompts of a specified part and save files.
-    
-    Args:
-        part_name: Part name, e.g., "upper", "lower", "shoes", "head", "hands", "lower_negation_for_upper"
-        image_pil: PIL Image object
-        sam3_model: SAM3Base instance
-        debug_dir: Debug file save directory, default is "./tmp"
-    """
     prompts_dict = BODY_PARTS_PROMPTS
     if part_name not in prompts_dict:
         logger.warning(f"Part '{part_name}' not found in prompts dict")
