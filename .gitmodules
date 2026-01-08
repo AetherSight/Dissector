@@ -1,0 +1,3 @@
+[submodule "env/mac/mlx_sam3"]
+	path = env/mac/mlx_sam3
+	url = https://github.com/Deekshith-Dade/mlx_sam3.git
