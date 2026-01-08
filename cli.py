@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-CLI tool for testing Dissector pipeline on macOS.
-Usage: python cli.py <image_path> [--box-threshold FLOAT] [--text-threshold FLOAT]
-"""
 import os
 import sys
 import argparse
@@ -13,14 +9,12 @@ import cv2
 import numpy as np
 from PIL import Image
 
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Suppress noisy HTTP logs from transformers/huggingface
 logging.getLogger("httpx").setLevel(logging.ERROR)
 logging.getLogger("httpcore").setLevel(logging.ERROR)
 logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
@@ -51,17 +45,14 @@ def main():
     
     args = parser.parse_args()
     
-    # Check input file
     if not os.path.exists(args.image_path):
         logger.error(f"Image not found: {args.image_path}")
         sys.exit(1)
     
-    # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {output_dir}")
     
-    # Load models
     logger.info("Loading models...")
     device = get_device()
     logger.info(f"Device: {device}")
@@ -76,21 +67,17 @@ def main():
         logger.error(f"Failed to load models: {e}", exc_info=True)
         sys.exit(1)
     
-    # Debug mode: generate mask images for prompts
     if args.debug_part:
         logger.info(f"Debug mode: generating masks for part(s): {', '.join(args.debug_part)}")
         try:
-            # Load image
             image_pil = Image.open(args.image_path)
             if image_pil.mode != "RGB":
                 image_pil = image_pil.convert("RGB")
             
-            # Create debug directory
             debug_dir = Path(args.debug_dir)
             debug_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"Debug output directory: {debug_dir}")
             
-            # Call debug function for each part
             for part_name in args.debug_part:
                 logger.info(f"Processing part: {part_name}")
                 debug_get_mask(
@@ -107,10 +94,8 @@ def main():
             logger.error(f"Error in debug mode: {e}", exc_info=True)
             sys.exit(1)
     
-    # Process image segmentation
     logger.info(f"Processing image: {args.image_path}")
     try:
-        # Read image and convert to PIL Image
         image_pil = Image.open(args.image_path)
         if image_pil.mode != "RGB":
             image_pil = image_pil.convert("RGB")
@@ -129,7 +114,6 @@ def main():
             logger.error("process_image returned None or empty results")
             sys.exit(1)
         
-        # Save segmented parts (decode from base64)
         logger.info("Saving segmented parts...")
         import base64
         
@@ -137,7 +121,6 @@ def main():
         for part in parts:
             if part in results:
                 try:
-                    # Decode base64
                     img_data = base64.b64decode(results[part])
                     img_array = np.frombuffer(img_data, dtype=np.uint8)
                     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
@@ -169,7 +152,6 @@ def main():
                 device,
             )
             
-            # Save background removed image
             import base64
             img_data = base64.b64decode(bg_result)
             output_path = output_dir / "background_removed.png"
