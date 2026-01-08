@@ -14,6 +14,8 @@ poetry install
 
 # Run API service
 poetry run python -m dissector
+# or 
+poetry run uvicorn dissector:app --port 8001 --workers 2
 ```
 
 ## Build
