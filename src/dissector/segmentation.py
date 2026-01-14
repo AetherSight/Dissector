@@ -540,7 +540,7 @@ def segment_parts_cuda(
     lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
 
     logger.debug("[STEP] detecting person/full body ...")
-    person_prompts = ["person", "full body", "outfit", "garment", "human"]
+    person_prompts = ["person", "full body", "outfit", "garment", "human", "accessory"]
     detect_and_store("person", person_prompts)
     person_mask = masks.get("person", np.zeros((h, w), dtype=bool))
     
