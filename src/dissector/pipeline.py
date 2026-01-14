@@ -76,6 +76,7 @@ def remove_background(
     person_prompts = [
         "person",
         "human",
+        "accessory"
     ]
     
     logger.info("Using SAM3 text prompt for background removal")
