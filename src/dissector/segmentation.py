@@ -154,7 +154,7 @@ def segment_parts_mlx(
         logger.info("lower_negation_for_upper not in prompts, using empty mask")
         masks_dict["lower_negation_for_upper"] = np.zeros((h, w), dtype=bool)
     
-    person_prompts = ["person", "full body", "outfit", "garment"]
+    person_prompts = ["person", "full body", "outfit", "garment", "human", "accessory"]
     person_mask_total = None
     for prompt in person_prompts:
         try:
