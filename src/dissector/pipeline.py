@@ -24,6 +24,22 @@ from .backend import SAM3Factory, SAM3Base
 from .segmentation import segment_parts
 
 
+def _imread_unicode(path: str) -> Optional[np.ndarray]:
+    """Robust image reader that handles Unicode paths on Windows."""
+    try:
+        with open(path, "rb") as f:
+            data_bytes = f.read()
+        if not data_bytes:
+            return None
+        arr = np.frombuffer(data_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        return img
+    except Exception:
+        # Fallback to cv2.imread; may emit warnings on Unicode paths
+        img = cv2.imread(path, cv2.IMREAD_COLOR)
+        return img
+
+
 def get_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -61,7 +77,7 @@ def remove_background(
     device: torch.device,
 ) -> str:
     if isinstance(image, str):
-        image_bgr = cv2.imread(image, cv2.IMREAD_COLOR)
+        image_bgr = _imread_unicode(image)
         if image_bgr is None:
             raise ValueError(f"Cannot read image: {image}")
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
@@ -127,7 +143,7 @@ def process_image(
     device: torch.device,
 ) -> Dict[str, str]:
     if isinstance(image, str):
-        image_bgr = cv2.imread(image, cv2.IMREAD_COLOR)
+        image_bgr = _imread_unicode(image)
         if image_bgr is None:
             logger.warning(f"Cannot read image: {image}")
             return {}
@@ -149,4 +165,3 @@ def process_image(
     segment_time = time.time() - segment_start
     logger.info(f"[PERF] segment_parts: {segment_time:.2f}s")
     return results
-

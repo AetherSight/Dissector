@@ -76,6 +76,62 @@ def clean_mask(mask: np.ndarray, min_area_ratio: float = DEFAULT_MIN_AREA_RATIO)
     cleaned = keep[labels]
     return cleaned.astype(bool)
 
+
+def close_mask(mask: np.ndarray) -> np.ndarray:
+    """Apply morphological close if configured."""
+    if MASK_CLOSE_KERNEL_SIZE and MASK_CLOSE_KERNEL_SIZE > 1:
+        k = np.ones((MASK_CLOSE_KERNEL_SIZE, MASK_CLOSE_KERNEL_SIZE), np.uint8)
+        return cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, k).astype(bool)
+    return mask
+
+
+def build_person_mask(
+    image_pil: Image.Image,
+    sam3_model: SAM3Base,
+    h: int,
+    w: int,
+) -> np.ndarray:
+    person_prompts = ["person", "full body", "outfit", "garment", "human", "accessory"]
+    mask_total = None
+    for prompt in person_prompts:
+        try:
+            prompt_mask = sam3_model.generate_mask_from_text_prompt(
+                image_pil=image_pil,
+                text_prompt=prompt,
+            )
+            if prompt_mask is None or prompt_mask.size == 0 or np.sum(prompt_mask) == 0:
+                continue
+            if prompt_mask.shape != (h, w):
+                mask_uint8 = (prompt_mask.astype(np.uint8) * 255) if prompt_mask.dtype == bool else prompt_mask.astype(np.uint8)
+                prompt_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+            else:
+                if prompt_mask.dtype != bool:
+                    prompt_mask = prompt_mask.astype(bool)
+            if mask_total is None:
+                mask_total = prompt_mask.copy()
+            else:
+                mask_total |= prompt_mask
+        except Exception:
+            continue
+    if mask_total is None or np.sum(mask_total) == 0:
+        # Fallback to full image to避免空结果
+        return np.ones((h, w), dtype=bool)
+    return mask_total.astype(bool)
+
+
+
+def get_roi_from_mask(mask: np.ndarray, pad: int = 10) -> tuple[int, int, int, int]:
+    ys, xs = np.where(mask)
+    if len(ys) == 0 or len(xs) == 0:
+        return 0, mask.shape[0], 0, mask.shape[1]
+    y0, y1 = ys.min(), ys.max()
+    x0, x1 = xs.min(), xs.max()
+    y0 = max(0, y0 - pad)
+    y1 = min(mask.shape[0] - 1, y1 + pad)
+    x0 = max(0, x0 - pad)
+    x1 = min(mask.shape[1] - 1, x1 + pad)
+    return y0, y1 + 1, x0, x1 + 1
+
 def segment_parts_mlx(
     image_pil: Image.Image,
     sam3_model: SAM3Base,
@@ -87,168 +143,134 @@ def segment_parts_mlx(
     results: Dict[str, str] = {}
     prompts_dict = BODY_PARTS_PROMPTS
     masks_dict: Dict[str, np.ndarray] = {}
-    other_parts = ["lower", "shoes", "head", "hands"]
-    
-    for part_name, prompts in prompts_dict.items():
-        try:
-            mask_total = None
-            for prompt_idx, prompt in enumerate(prompts):
-                try:
-                    prompt_mask = sam3_model.generate_mask_from_text_prompt(
-                        image_pil=image_pil,
-                        text_prompt=prompt,
-                    )
-                    if prompt_mask is not None and prompt_mask.size > 0:
-                        mask_pixels = np.sum(prompt_mask)
-                        if mask_pixels > 0:
-                            if mask_total is None:
-                                mask_total = prompt_mask.copy()
-                            else:
-                                mask_total |= prompt_mask
-                except Exception as e:
-                    continue
-            
-            mask = mask_total
-            
-            if mask is None or mask.size == 0 or np.sum(mask) == 0:
-                masks_dict[part_name] = np.zeros((h, w), dtype=bool)
-                continue
-            
-            if mask.shape != (h, w):
-                mask_uint8 = (mask.astype(np.uint8) * 255) if mask.dtype == bool else mask.astype(np.uint8)
-                mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-            
-            masks_dict[part_name] = mask
-            
-        except Exception as e:
-            masks_dict[part_name] = np.zeros((h, w), dtype=bool)
-    
-    if "lower_negation_for_upper" in prompts_dict:
-        lower_negation_prompts = prompts_dict["lower_negation_for_upper"]
-        lower_negation_mask_total = None
-        for prompt in lower_negation_prompts:
+
+    # 1) 获取人物掩码并裁剪 ROI
+    person_mask = build_person_mask(image_pil=image_pil, sam3_model=sam3_model, h=h, w=w)
+
+    y0, y1, x0, x1 = get_roi_from_mask(person_mask)
+    roi_rgb = image_rgb[y0:y1, x0:x1]
+    roi_pil = Image.fromarray(roi_rgb)
+    roi_h, roi_w = roi_rgb.shape[:2]
+
+    def detect_on_roi(prompts) -> np.ndarray:
+        if not prompts:
+            return np.zeros((h, w), dtype=bool)
+        mask_total = None
+        for prompt in prompts:
             try:
                 prompt_mask = sam3_model.generate_mask_from_text_prompt(
-                    image_pil=image_pil,
+                    image_pil=roi_pil,
                     text_prompt=prompt,
                 )
-                if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
-                    if lower_negation_mask_total is None:
-                        lower_negation_mask_total = prompt_mask.copy()
-                    else:
-                        lower_negation_mask_total |= prompt_mask
-            except Exception as e:
-                continue
-        
-        if lower_negation_mask_total is None or lower_negation_mask_total.size == 0:
-            logger.info("lower_negation_for_upper prompts returned no mask (legs/pants may be covered), using empty mask")
-            lower_negation_mask = np.zeros((h, w), dtype=bool)
-        else:
-            lower_negation_mask = lower_negation_mask_total
-            if lower_negation_mask.shape != (h, w):
-                mask_uint8 = (lower_negation_mask.astype(np.uint8) * 255) if lower_negation_mask.dtype == bool else lower_negation_mask.astype(np.uint8)
-                lower_negation_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-        
-        masks_dict["lower_negation_for_upper"] = lower_negation_mask
-    else:
-        logger.info("lower_negation_for_upper not in prompts, using empty mask")
-        masks_dict["lower_negation_for_upper"] = np.zeros((h, w), dtype=bool)
-    
-    person_prompts = ["person", "full body", "outfit", "garment", "human", "accessory"]
-    person_mask_total = None
-    for prompt in person_prompts:
-        try:
-            prompt_mask = sam3_model.generate_mask_from_text_prompt(
-                image_pil=image_pil,
-                text_prompt=prompt,
-            )
-            if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
-                if person_mask_total is None:
-                    person_mask_total = prompt_mask.copy()
+                if prompt_mask is None or prompt_mask.size == 0 or np.sum(prompt_mask) == 0:
+                    continue
+                if prompt_mask.shape != (roi_h, roi_w):
+                    mask_uint8 = (prompt_mask.astype(np.uint8) * 255) if prompt_mask.dtype == bool else prompt_mask.astype(np.uint8)
+                    prompt_mask = cv2.resize(mask_uint8, (roi_w, roi_h), interpolation=cv2.INTER_NEAREST).astype(bool)
                 else:
-                    person_mask_total |= prompt_mask
-        except Exception as e:
-            continue
-    
-    if person_mask_total is None or person_mask_total.size == 0:
-        person_mask = np.zeros((h, w), dtype=bool)
-        for part_name in other_parts:
-            if part_name in masks_dict:
-                person_mask |= masks_dict[part_name]
-    else:
-        person_mask = person_mask_total
-        if person_mask.shape != (h, w):
-            mask_uint8 = (person_mask.astype(np.uint8) * 255) if person_mask.dtype == bool else person_mask.astype(np.uint8)
-            person_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-    
-    upper_detected = masks_dict.get("upper", np.zeros((h, w), dtype=bool))
+                    if prompt_mask.dtype != bool:
+                        prompt_mask = prompt_mask.astype(bool)
+                if mask_total is None:
+                    mask_total = prompt_mask.copy()
+                else:
+                    mask_total |= prompt_mask
+            except Exception:
+                continue
+        full_mask = np.zeros((h, w), dtype=bool)
+        if mask_total is not None and np.sum(mask_total) > 0:
+            full_mask[y0:y1, x0:x1] = mask_total
+        return full_mask
+
+    # 2) 逐部位检测（基于 ROI）
+    for part_name, prompts in prompts_dict.items():
+        masks_dict[part_name] = detect_on_roi(prompts)
+
+    # 补充 lower_negation_for_upper 已包含在 prompts_dict 上面
     lower_negation_mask = masks_dict.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
-    lower_mask_for_upper = masks_dict.get("lower", np.zeros((h, w), dtype=bool))
-    
+
+    # 3) 形态学与清理
+    for key in list(masks_dict.keys()):
+        masks_dict[key] = close_mask(masks_dict[key])
+
+    # 4) 组合与过滤
+    masks_dict["shoes"] = clean_mask(masks_dict.get("shoes", np.zeros((h, w), dtype=bool)), min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+
+    lower_mask = masks_dict.get("lower", np.zeros((h, w), dtype=bool))
+    lower_mask = lower_mask & (~masks_dict.get("shoes", np.zeros_like(lower_mask)))
+    lower_mask = clean_mask(lower_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks_dict["lower"] = lower_mask
+
+    head_mask = masks_dict.get("head", np.zeros((h, w), dtype=bool))
+    if np.any(head_mask):
+        kernel = np.ones((HEAD_DILATE_KERNEL_SIZE, HEAD_DILATE_KERNEL_SIZE), np.uint8)
+        head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+    masks_dict["head"] = head_mask
+
+    hand_mask = masks_dict.get("hands", np.zeros((h, w), dtype=bool))
+    hand_mask = clean_mask(hand_mask, min_area_ratio=HANDS_MIN_AREA_RATIO)
+    if np.any(hand_mask):
+        kernel = np.ones((HANDS_DILATE_KERNEL_SIZE, HANDS_DILATE_KERNEL_SIZE), np.uint8)
+        hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+    masks_dict["hands"] = hand_mask
+
     person_minus_extremities = person_mask.copy()
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks_dict:
             person_minus_extremities = person_minus_extremities & (~masks_dict[part_name])
-    if person_minus_extremities.shape != (h, w):
-        mask_uint8 = (person_minus_extremities.astype(np.uint8) * 255) if person_minus_extremities.dtype == bool else person_minus_extremities.astype(np.uint8)
-        person_minus_extremities = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-    
+
+    upper_detected = masks_dict.get("upper", np.zeros((h, w), dtype=bool))
+    lower_mask_for_upper = masks_dict.get("lower", np.zeros((h, w), dtype=bool))
+
     upper_original = upper_detected.copy()
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks_dict:
             upper_original = upper_original & (~masks_dict[part_name])
-    if upper_original.shape != (h, w):
-        mask_uint8 = (upper_original.astype(np.uint8) * 255) if upper_original.dtype == bool else upper_original.astype(np.uint8)
-        upper_original = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+    upper_original = upper_original & person_mask
     upper_original = clean_mask(upper_original, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks_dict["upper"] = upper_original
-    
+
     upper_1 = upper_detected.copy()
     upper_1 = upper_1 & (~lower_negation_mask)
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks_dict:
             upper_1 = upper_1 & (~masks_dict[part_name])
+    upper_1 = upper_1 & person_mask
     upper_1 = clean_mask(upper_1, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks_dict["upper_1"] = upper_1
-    
+
     upper_2 = upper_detected.copy()
     upper_2 = upper_2 & (~lower_mask_for_upper)
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks_dict:
             upper_2 = upper_2 & (~masks_dict[part_name])
+    upper_2 = upper_2 & person_mask
     upper_2 = clean_mask(upper_2, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks_dict["upper_2"] = upper_2
-    
+
     upper_3 = person_minus_extremities.copy()
     upper_3 = upper_3 & (~lower_mask_for_upper)
     upper_3 = clean_mask(upper_3, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks_dict["upper_3"] = upper_3
-    
+
     upper_4 = person_minus_extremities.copy()
     upper_4 = upper_4 & (~lower_negation_mask)
     upper_4 = clean_mask(upper_4, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks_dict["upper_4"] = upper_4
-    
-    if "lower" in masks_dict:
-        lower_mask = masks_dict["lower"].copy()
-        if "shoes" in masks_dict:
-            lower_mask = lower_mask & (~masks_dict["shoes"])
-        lower_mask = clean_mask(lower_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
-        masks_dict["lower"] = lower_mask
-    
+
+    # 5) 输出
     for part_name in prompts_dict.keys():
         mask = masks_dict.get(part_name, np.zeros((h, w), dtype=bool))
         if part_name not in ["upper", "lower"]:
             mask = clean_mask(mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
         cropped_img = white_bg(image_bgr, mask)
         results[part_name] = encode_image(cropped_img, ext=".jpg")
-    
+
     for variant_name in ["upper_1", "upper_2", "upper_3", "upper_4"]:
         if variant_name in masks_dict:
             mask = masks_dict[variant_name]
             cropped_img = white_bg(image_bgr, mask)
             results[variant_name] = encode_image(cropped_img, ext=".jpg")
-    
+
     return results
 
 def debug_get_mask(
@@ -392,112 +414,83 @@ def segment_parts_cuda(
 
     masks: Dict[str, np.ndarray] = {}
     prompts_dict = BODY_PARTS_PROMPTS
-    other_parts = ["lower", "shoes", "head", "hands"]
+    backend_name = sam3_model.backend_name
+
+    # 1) 人物掩码与 ROI
+    person_mask = build_person_mask(image_pil=image_pil, sam3_model=sam3_model, h=h, w=w)
+    y0, y1, x0, x1 = get_roi_from_mask(person_mask)
+    roi_rgb = image_rgb[y0:y1, x0:x1]
+    roi_pil = Image.fromarray(roi_rgb)
+    roi_h, roi_w = roi_rgb.shape[:2]
 
     def detect_and_store(key: str, prompts):
-        """
-        Detect and store mask using SAM3 text prompts.
-        
-        Args:
-            key: Storage key name
-            prompts: Can be in one of two formats:
-                - List[str]: Single-round detection, use all prompts directly
-                - List[List[str]]: Multi-round detection, merge results after each round
-        """
         if not prompts:
             masks[key] = np.zeros((h, w), dtype=bool)
             return
-        
+        mask_total = None
+        # 支持多轮提示
         if isinstance(prompts[0], list):
-            mask_total = None
-            for round_idx, round_prompts in enumerate(prompts):
-                logger.debug(f"[ROUND {round_idx + 1}] detecting with prompts: {round_prompts}")
-                round_mask_total = None
-                for prompt in round_prompts:
-                    try:
-                        prompt_mask = sam3_model.generate_mask_from_text_prompt(
-                            image_pil=image_pil,
-                            text_prompt=prompt,
-                        )
-                        if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
-                            if prompt_mask.shape != (h, w):
-                                mask_uint8 = (prompt_mask.astype(np.uint8) * 255) if prompt_mask.dtype == bool else prompt_mask.astype(np.uint8)
-                                prompt_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-                            else:
-                                if prompt_mask.dtype != bool:
-                                    prompt_mask = prompt_mask.astype(bool)
-                            
-                            if round_mask_total is None:
-                                round_mask_total = prompt_mask.copy()
-                            else:
-                                round_mask_total |= prompt_mask
-                    except Exception as e:
-                        logger.warning(f"Failed to generate mask for prompt '{prompt}': {e}")
-                        continue
-                
-                if round_mask_total is not None:
-                    if mask_total is None:
-                        mask_total = round_mask_total.copy()
-                    else:
-                        mask_total |= round_mask_total
-            
-            masks[key] = mask_total if mask_total is not None else np.zeros((h, w), dtype=bool)
+            prompt_rounds = prompts
         else:
-            mask_total = None
-            for prompt in prompts:
+            prompt_rounds = [prompts]
+        for round_prompts in prompt_rounds:
+            round_mask_total = None
+            for prompt in round_prompts:
                 try:
                     prompt_mask = sam3_model.generate_mask_from_text_prompt(
-                        image_pil=image_pil,
+                        image_pil=roi_pil,
                         text_prompt=prompt,
                     )
-                    if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
-                        if prompt_mask.shape != (h, w):
-                            mask_uint8 = (prompt_mask.astype(np.uint8) * 255) if prompt_mask.dtype == bool else prompt_mask.astype(np.uint8)
-                            prompt_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-                        else:
-                            if prompt_mask.dtype != bool:
-                                prompt_mask = prompt_mask.astype(bool)
-                        
-                        if mask_total is None:
-                            mask_total = prompt_mask.copy()
-                        else:
-                            mask_total |= prompt_mask
+                    if prompt_mask is None or prompt_mask.size == 0 or np.sum(prompt_mask) == 0:
+                        continue
+                    if prompt_mask.shape != (roi_h, roi_w):
+                        mask_uint8 = (prompt_mask.astype(np.uint8) * 255) if prompt_mask.dtype == bool else prompt_mask.astype(np.uint8)
+                        prompt_mask = cv2.resize(mask_uint8, (roi_w, roi_h), interpolation=cv2.INTER_NEAREST).astype(bool)
+                    else:
+                        if prompt_mask.dtype != bool:
+                            prompt_mask = prompt_mask.astype(bool)
+                    if round_mask_total is None:
+                        round_mask_total = prompt_mask.copy()
+                    else:
+                        round_mask_total |= prompt_mask
                 except Exception as e:
                     logger.warning(f"Failed to generate mask for prompt '{prompt}': {e}")
                     continue
-            
-            masks[key] = mask_total if mask_total is not None else np.zeros((h, w), dtype=bool)
+            if round_mask_total is not None:
+                if mask_total is None:
+                    mask_total = round_mask_total.copy()
+                else:
+                    mask_total |= round_mask_total
+        full_mask = np.zeros((h, w), dtype=bool)
+        if mask_total is not None and np.sum(mask_total) > 0:
+            full_mask[y0:y1, x0:x1] = mask_total
+        masks[key] = full_mask
 
-    backend_name = sam3_model.backend_name
-
-    logger.debug("[STEP] detecting shoes ...")
+    # 2) 部位检测（基于 ROI）
     detect_and_store("shoes", get_prompts_for_backend(backend_name, "shoes"))
-
-    logger.debug("[STEP] detecting lower ...")
     detect_and_store("lower_raw", get_prompts_for_backend(backend_name, "lower"))
+    detect_and_store("head", get_prompts_for_backend(backend_name, "head"))
+    detect_and_store("hands", get_prompts_for_backend(backend_name, "hands"))
+    detect_and_store("lower_negation_for_upper", prompts_dict.get("lower_negation_for_upper", []))
+    detect_and_store("upper_raw", get_prompts_for_backend(backend_name, "upper"))
+
+    # 3) 形态学与清理
+    for key in list(masks.keys()):
+        masks[key] = close_mask(masks[key])
+
+    lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
+
     lower_mask = masks.get("lower_raw", np.zeros((h, w), dtype=bool))
     lower_mask = lower_mask & (~masks.get("shoes", np.zeros_like(lower_mask)))
-    masks["lower"] = clean_mask(lower_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    lower_mask = clean_mask(lower_mask, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
+    masks["lower"] = lower_mask
 
-    logger.debug("[STEP] detecting head ...")
-    detect_and_store("head", get_prompts_for_backend(backend_name, "head"))
     head_mask = masks.get("head", np.zeros((h, w), dtype=bool))
     if np.any(head_mask):
         kernel = np.ones((HEAD_DILATE_KERNEL_SIZE, HEAD_DILATE_KERNEL_SIZE), np.uint8)
         head_mask = cv2.dilate(head_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["head"] = head_mask
-    
-    if False:
-        detect_and_store("debug", ["triangular ears"])
-        debug_mask = masks.get("debug", np.zeros((h, w), dtype=bool))
-        tmp_dir = tempfile.gettempdir()
-        debug_mask_vis = (debug_mask.astype(np.uint8)) * 255
-        debug_path = os.path.join(tmp_dir, "debug_mask.png")
-        cv2.imwrite(debug_path, debug_mask_vis)
-        logger.info(f"Saved test-only mask debug image: {debug_path}")
 
-    logger.debug("[STEP] detecting hands ...")
-    detect_and_store("hands", get_prompts_for_backend(backend_name, "hands"))
     hand_mask = masks.get("hands", np.zeros(image_rgb.shape[:2], dtype=bool))
     hand_mask = clean_mask(hand_mask, min_area_ratio=HANDS_MIN_AREA_RATIO)
     if np.any(hand_mask):
@@ -505,63 +498,19 @@ def segment_parts_cuda(
         hand_mask = cv2.dilate(hand_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
     masks["hands"] = hand_mask
 
-    logger.debug("[STEP] detecting lower_negation_for_upper ...")
-    if "lower_negation_for_upper" in prompts_dict:
-        lower_negation_prompts = prompts_dict["lower_negation_for_upper"]
-        lower_negation_mask_total = None
-        for prompt in lower_negation_prompts:
-            try:
-                prompt_mask = sam3_model.generate_mask_from_text_prompt(
-                    image_pil=image_pil,
-                    text_prompt=prompt,
-                )
-                if prompt_mask is not None and prompt_mask.size > 0 and np.sum(prompt_mask) > 0:
-                    if lower_negation_mask_total is None:
-                        lower_negation_mask_total = prompt_mask.copy()
-                    else:
-                        lower_negation_mask_total |= prompt_mask
-            except Exception as e:
-                continue
-        
-        if lower_negation_mask_total is None or lower_negation_mask_total.size == 0:
-            logger.info("lower_negation_for_upper prompts returned no mask (legs/pants may be covered), using empty mask")
-            lower_negation_mask = np.zeros((h, w), dtype=bool)
-        else:
-            lower_negation_mask = lower_negation_mask_total
-            if lower_negation_mask.shape != (h, w):
-                mask_uint8 = (lower_negation_mask.astype(np.uint8) * 255) if lower_negation_mask.dtype == bool else lower_negation_mask.astype(np.uint8)
-                lower_negation_mask = cv2.resize(mask_uint8, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-        
-        masks["lower_negation_for_upper"] = lower_negation_mask
-    else:
-        logger.info("lower_negation_for_upper not in prompts, using empty mask")
-        masks["lower_negation_for_upper"] = np.zeros((h, w), dtype=bool)
-    
-    lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
-
-    logger.debug("[STEP] detecting person/full body ...")
-    person_prompts = ["person", "full body", "outfit", "garment", "human", "accessory"]
-    detect_and_store("person", person_prompts)
-    person_mask = masks.get("person", np.zeros((h, w), dtype=bool))
-    
-    logger.debug("[STEP] detecting upper (direct method) ...")
-    detect_and_store("upper_raw", get_prompts_for_backend(backend_name, "upper"))
-    
-    person_mask = masks.get("person", np.zeros((h, w), dtype=bool))
-    upper_detected = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
-    lower_negation_mask = masks.get("lower_negation_for_upper", np.zeros((h, w), dtype=bool))
-    lower_mask_for_upper = masks.get("lower", np.zeros((h, w), dtype=bool))
-    
     person_minus_extremities = person_mask.copy()
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks:
             person_minus_extremities = person_minus_extremities & (~masks[part_name])
-    
+
+    upper_detected = masks.get("upper_raw", np.zeros(image_rgb.shape[:2], dtype=bool))
+    lower_mask_for_upper = masks.get("lower", np.zeros((h, w), dtype=bool))
+
     upper_original = upper_detected.copy()
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks:
             upper_original = upper_original & (~masks[part_name])
-    
+    upper_original = upper_original & person_mask
     upper_original = clean_mask(upper_original, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     
     masks["upper"] = upper_original
@@ -571,6 +520,7 @@ def segment_parts_cuda(
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks:
             upper_1 = upper_1 & (~masks[part_name])
+    upper_1 = upper_1 & person_mask
     upper_1 = clean_mask(upper_1, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks["upper_1"] = upper_1
     
@@ -579,6 +529,7 @@ def segment_parts_cuda(
     for part_name in ["shoes", "head", "hands"]:
         if part_name in masks:
             upper_2 = upper_2 & (~masks[part_name])
+    upper_2 = upper_2 & person_mask
     upper_2 = clean_mask(upper_2, min_area_ratio=DEFAULT_MIN_AREA_RATIO)
     masks["upper_2"] = upper_2
     
