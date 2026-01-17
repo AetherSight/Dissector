@@ -26,6 +26,9 @@ from .constants import (
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)  # Hide DEBUG output from segmentation module
 
+MAX_PROMPTS_PER_PART = 5  # 控制每个部位使用的提示数量以减少调用次数
+
+
 def white_bg(image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
     if np.sum(mask) == 0:
         return np.full_like(image_bgr, 255, dtype=np.uint8)
@@ -75,6 +78,16 @@ def clean_mask(mask: np.ndarray, min_area_ratio: float = DEFAULT_MIN_AREA_RATIO)
             keep[i] = True
     cleaned = keep[labels]
     return cleaned.astype(bool)
+
+
+def limit_prompts(prompts):
+    """Limit number of prompts per part to reduce calls."""
+    if not prompts:
+        return prompts
+    # Multi-round: trim每一轮
+    if isinstance(prompts[0], list):
+        return [p[:MAX_PROMPTS_PER_PART] for p in prompts]
+    return prompts[:MAX_PROMPTS_PER_PART]
 
 
 def close_mask(mask: np.ndarray) -> np.ndarray:
@@ -183,6 +196,7 @@ def segment_parts_mlx(
 
     # 2) 逐部位检测（基于 ROI）
     for part_name, prompts in prompts_dict.items():
+        prompts = limit_prompts(prompts)
         masks_dict[part_name] = detect_on_roi(prompts)
 
     # 补充 lower_negation_for_upper 已包含在 prompts_dict 上面
@@ -467,12 +481,12 @@ def segment_parts_cuda(
         masks[key] = full_mask
 
     # 2) 部位检测（基于 ROI）
-    detect_and_store("shoes", get_prompts_for_backend(backend_name, "shoes"))
-    detect_and_store("lower_raw", get_prompts_for_backend(backend_name, "lower"))
-    detect_and_store("head", get_prompts_for_backend(backend_name, "head"))
-    detect_and_store("hands", get_prompts_for_backend(backend_name, "hands"))
-    detect_and_store("lower_negation_for_upper", prompts_dict.get("lower_negation_for_upper", []))
-    detect_and_store("upper_raw", get_prompts_for_backend(backend_name, "upper"))
+    detect_and_store("shoes", limit_prompts(get_prompts_for_backend(backend_name, "shoes")))
+    detect_and_store("lower_raw", limit_prompts(get_prompts_for_backend(backend_name, "lower")))
+    detect_and_store("head", limit_prompts(get_prompts_for_backend(backend_name, "head")))
+    detect_and_store("hands", limit_prompts(get_prompts_for_backend(backend_name, "hands")))
+    detect_and_store("lower_negation_for_upper", limit_prompts(prompts_dict.get("lower_negation_for_upper", [])))
+    detect_and_store("upper_raw", limit_prompts(get_prompts_for_backend(backend_name, "upper")))
 
     # 3) 形态学与清理
     for key in list(masks.keys()):
